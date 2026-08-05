@@ -426,6 +426,12 @@ type AgentSession interface {
 	Close() error
 }
 
+// AgentSessionSteerer is an optional capability for adding guidance to the
+// currently active turn without starting a separate turn.
+type AgentSessionSteerer interface {
+	Steer(prompt string) error
+}
+
 // PermissionResult represents the user's decision on a permission request.
 type PermissionResult struct {
 	Behavior     string         `json:"behavior"`               // "allow" or "deny"

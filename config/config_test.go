@@ -104,6 +104,14 @@ func TestConfigValidate(t *testing.T) {
 			},
 		},
 		{
+			name: "rejects invalid busy message mode",
+			cfg: Config{
+				Queue:    QueueConfig{BusyMessageMode: "direct"},
+				Projects: []ProjectConfig{validProject("demo")},
+			},
+			wantErr: `queue.busy_message_mode must be "queue" or "steer"`,
+		},
+		{
 			name: "accepts valid references config",
 			cfg: Config{
 				Projects: []ProjectConfig{
@@ -186,6 +194,30 @@ func TestConfigValidate(t *testing.T) {
 			}
 			assertErrContains(t, err, tt.wantErr)
 		})
+	}
+}
+
+func TestLoadQueueBusyMessageMode(t *testing.T) {
+	configPath := writeConfigFixture(t, `
+[queue]
+busy_message_mode = "steer"
+
+[[projects]]
+name = "demo"
+
+[projects.agent]
+type = "codex"
+
+[[projects.platforms]]
+type = "telegram"
+`)
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if got := cfg.Queue.BusyMessageMode; got != "steer" {
+		t.Fatalf("Queue.BusyMessageMode = %q, want steer", got)
 	}
 }
 

@@ -157,6 +157,15 @@ level = "info" # debug, info, warn, error
 # 推荐值：30–60。默认 0（禁用）。
 # max_turn_time_mins = 0  # default: disabled / 默认禁用
 
+# Ordinary messages received while a task is running wait in a FIFO queue by
+# default. Set busy_message_mode to "steer" to guide the active turn instead.
+# This setting does not change /ps or /stop. Image/file messages always wait.
+# 任务执行期间收到的普通消息默认进入 FIFO 队列等待。设为 "steer" 后，纯文本消息会
+# 引导当前任务。此配置不改变 /ps 或 /stop；图片和文件始终排队。
+# [queue]
+# max_depth = 5
+# busy_message_mode = "queue" # "queue" (default) or "steer" / "queue"（默认）或 "steer"
+
 # Auto-reset the active session after the user has been inactive for a while.
 # Unlike idle_timeout_mins, this does not detect stuck agent execution. It
 # rotates to a fresh cc-connect session when the user comes back after being idle.

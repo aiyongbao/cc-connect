@@ -31,6 +31,11 @@ const maxPlatformMessageLen = 4000
 const telegramBotCommandLimit = 100
 const defaultMaxQueuedMessages = 5 // default cap for queued messages per session
 
+const (
+	busyMessageModeQueue = "queue"
+	busyMessageModeSteer = "steer"
+)
+
 // defaultPendingRestartTimeout is how long the post-restart notify
 // dispatcher waits for the target platform to reach ready before
 // dropping the notify with a warning. 10s covers the typical 2-3s
@@ -393,6 +398,7 @@ type Engine struct {
 	agentSessionIdleTimeoutNanos atomic.Int64
 	agentSessionIdleSeq          atomic.Uint64
 	maxQueuedMessages            int
+	busyMessageMode              string
 	dirHistory                   *DirHistory
 	baseWorkDir                  string
 	projectState                 *ProjectStateStore
@@ -734,6 +740,7 @@ func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath str
 		references:            DefaultReferenceRenderCfg(),
 		eventIdleTimeout:      defaultEventIdleTimeout,
 		maxQueuedMessages:     defaultMaxQueuedMessages,
+		busyMessageMode:       busyMessageModeQueue,
 		showContextIndicator:  true,
 		showWorkdirIndicator:  true,
 		shell:                 defaultShell(),
@@ -1316,6 +1323,17 @@ func (e *Engine) SetMaxQueuedMessages(n int) {
 	if n > 0 {
 		e.maxQueuedMessages = n
 	}
+}
+
+// SetBusyMessageMode controls how ordinary text messages arriving during an
+// active turn are delivered. Explicit commands such as /ps and /stop are not
+// affected. "steer" guides the active turn; all other values retain FIFO queueing.
+func (e *Engine) SetBusyMessageMode(mode string) {
+	if strings.EqualFold(strings.TrimSpace(mode), busyMessageModeSteer) {
+		e.busyMessageMode = busyMessageModeSteer
+		return
+	}
+	e.busyMessageMode = busyMessageModeQueue
 }
 
 func (e *Engine) SetRelayManager(rm *RelayManager) {
@@ -2970,6 +2988,14 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPreviousProcessing))
 			return
 		}
+		// In steer mode, ordinary plain text guides the in-flight turn.
+		// Attachments retain FIFO delivery because active-turn steering only
+		// supports text input.
+		if e.busyMessageMode == busyMessageModeSteer && len(msg.Images) == 0 && len(msg.Files) == 0 {
+			if e.steerMessageIntoBusySession(p, msg, interactiveKey) {
+				return
+			}
+		}
 		// Session is busy — try to queue the message for the running turn
 		// so the agent processes it immediately after the current turn ends.
 		if e.queueMessageForBusySession(p, msg, interactiveKey) {
@@ -3018,6 +3044,39 @@ sessionLocked:
 	)
 
 	go e.processInteractiveMessageWith(p, msg, session, agent, sessions, interactiveKey, resolvedWorkspace, msg.SessionKey)
+}
+
+// steerMessageIntoBusySession sends an ordinary plain-text follow-up to the
+// active agent turn. A false return lets the caller fall back to FIFO queueing.
+func (e *Engine) steerMessageIntoBusySession(p Platform, msg *Message, interactiveKey string) bool {
+	e.interactiveMu.Lock()
+	state, ok := e.interactiveStates[interactiveKey]
+	e.interactiveMu.Unlock()
+	if !ok || state == nil {
+		return false
+	}
+
+	state.mu.Lock()
+	agentSession := state.agentSession
+	state.mu.Unlock()
+	if agentSession == nil || !agentSession.Alive() {
+		return false
+	}
+	steerer, ok := agentSession.(AgentSessionSteerer)
+	if !ok {
+		return false
+	}
+
+	if err := steerer.Steer(msg.Content); err != nil {
+		slog.Warn("busy message steering failed; falling back to queue",
+			"session", msg.SessionKey, "error", err)
+		return false
+	}
+
+	e.noteUserMessageAccepted(interactiveKey, msg.UserMessageTimeMs)
+	runMessageAccepted(msg)
+	e.reply(p, msg.ReplyCtx, e.i18n.T(MsgSteerSent))
+	return true
 }
 
 func runMessageAccepted(msg *Message) {

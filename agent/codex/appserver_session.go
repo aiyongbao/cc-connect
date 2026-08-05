@@ -64,6 +64,10 @@ type turnStartResponse struct {
 	} `json:"turn"`
 }
 
+type turnSteerResponse struct {
+	TurnID string `json:"turnId"`
+}
+
 type turnNotification struct {
 	ThreadID string `json:"threadId"`
 	Turn     struct {
@@ -508,6 +512,45 @@ func (s *appServerSession) Send(prompt string, messageID string, images []core.I
 	s.pendingMsgs = s.pendingMsgs[:0]
 	s.stateMu.Unlock()
 
+	return nil
+}
+
+// Steer adds text guidance to the currently active Codex turn. The expected
+// turn ID prevents a late follow-up from being applied to a different turn.
+func (s *appServerSession) Steer(prompt string) error {
+	if !s.alive.Load() {
+		return fmt.Errorf("session is closed")
+	}
+
+	threadID := s.CurrentSessionID()
+	if threadID == "" {
+		return fmt.Errorf("codex app-server thread id is empty")
+	}
+
+	s.stateMu.Lock()
+	turnID := s.currentTurn
+	s.stateMu.Unlock()
+	if turnID == "" {
+		return fmt.Errorf("codex app-server active turn id is empty")
+	}
+
+	params := map[string]any{
+		"threadId":       threadID,
+		"expectedTurnId": turnID,
+		"input": []map[string]any{{
+			"type":          "text",
+			"text":          prompt,
+			"text_elements": []any{},
+		}},
+	}
+
+	var resp turnSteerResponse
+	if err := s.request("turn/steer", params, &resp); err != nil {
+		return fmt.Errorf("codex app-server turn/steer: %w", err)
+	}
+	if resp.TurnID == "" {
+		return fmt.Errorf("codex app-server turn/steer returned empty turn id")
+	}
 	return nil
 }
 

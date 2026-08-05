@@ -177,6 +177,63 @@ func TestAppServerSession_RequestTimeoutIncludesBlockedStdinWrite(t *testing.T) 
 	}
 }
 
+func TestAppServerSession_SteerUsesActiveTurn(t *testing.T) {
+	stdin := &rpcRespondingWriteCloser{result: json.RawMessage(`{"turnId":"turn-1"}`)}
+	s := &appServerSession{
+		stdin:   stdin,
+		pending: make(map[int64]chan rpcResponseEnvelope),
+	}
+	stdin.session = s
+	s.alive.Store(true)
+	s.threadID.Store("thread-1")
+	s.currentTurn = "turn-1"
+
+	if err := s.Steer("stop after the summary"); err != nil {
+		t.Fatalf("Steer() error: %v", err)
+	}
+
+	request := stdin.Request()
+	if got := request["method"]; got != "turn/steer" {
+		t.Fatalf("method = %#v, want turn/steer", got)
+	}
+	params, ok := request["params"].(map[string]any)
+	if !ok {
+		t.Fatalf("params = %#v, want object", request["params"])
+	}
+	if got := params["threadId"]; got != "thread-1" {
+		t.Fatalf("threadId = %#v, want thread-1", got)
+	}
+	if got := params["expectedTurnId"]; got != "turn-1" {
+		t.Fatalf("expectedTurnId = %#v, want turn-1", got)
+	}
+	input, ok := params["input"].([]any)
+	if !ok || len(input) != 1 {
+		t.Fatalf("input = %#v, want one item", params["input"])
+	}
+	textInput, ok := input[0].(map[string]any)
+	if !ok || textInput["type"] != "text" || textInput["text"] != "stop after the summary" {
+		t.Fatalf("input[0] = %#v, want text guidance", input[0])
+	}
+	if s.currentTurn != "turn-1" {
+		t.Fatalf("currentTurn = %q, want unchanged turn-1", s.currentTurn)
+	}
+}
+
+func TestAppServerSession_SteerRequiresActiveTurn(t *testing.T) {
+	stdin := &lockedWriteCloser{}
+	s := &appServerSession{stdin: stdin}
+	s.alive.Store(true)
+	s.threadID.Store("thread-1")
+
+	err := s.Steer("late follow-up")
+	if err == nil || !strings.Contains(err.Error(), "active turn id is empty") {
+		t.Fatalf("Steer() error = %v, want missing active turn", err)
+	}
+	if got := stdin.String(); got != "" {
+		t.Fatalf("unexpected app-server request: %q", got)
+	}
+}
+
 func TestMapAppServerRateLimits_PrefersMultiBucketView(t *testing.T) {
 	report := mapAppServerRateLimits(appServerRateLimitsResponse{
 		RateLimits: appServerRateLimitSnapshot{
@@ -370,6 +427,35 @@ func (w *lockedWriteCloser) String() string {
 }
 
 var _ io.WriteCloser = (*lockedWriteCloser)(nil)
+
+type rpcRespondingWriteCloser struct {
+	mu      sync.Mutex
+	request map[string]any
+	result  json.RawMessage
+	session *appServerSession
+}
+
+func (w *rpcRespondingWriteCloser) Write(p []byte) (int, error) {
+	var request map[string]any
+	if err := json.Unmarshal(bytes.TrimSpace(p), &request); err != nil {
+		return 0, err
+	}
+	w.mu.Lock()
+	w.request = request
+	w.mu.Unlock()
+	w.session.handleResponse(rpcResponseEnvelope{ID: request["id"], Result: w.result})
+	return len(p), nil
+}
+
+func (w *rpcRespondingWriteCloser) Close() error { return nil }
+
+func (w *rpcRespondingWriteCloser) Request() map[string]any {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.request
+}
+
+var _ io.WriteCloser = (*rpcRespondingWriteCloser)(nil)
 
 type blockingWriteCloser struct {
 	started   chan struct{}
