@@ -131,6 +131,58 @@ func TestAppServerSession_HandleThreadTokenUsageUpdatedCachesContextUsage(t *tes
 	}
 }
 
+func TestAppServerSession_HandleTurnCompletedFailureEmitsError(t *testing.T) {
+	tests := []struct {
+		name      string
+		raw       string
+		wantError string
+	}{
+		{
+			name:      "with provider error",
+			raw:       `{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed","error":{"message":"Selected model is at capacity. Please try a different model."}}}`,
+			wantError: "codex app-server turn failed: Selected model is at capacity. Please try a different model.",
+		},
+		{
+			name:      "without provider error",
+			raw:       `{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed","error":null}}`,
+			wantError: "codex app-server turn failed",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &appServerSession{events: make(chan core.Event, 2), pendingMsgs: []string{"partial"}}
+			s.currentTurn = "turn-1"
+
+			s.handleNotification("turn/completed", []byte(tt.raw))
+
+			select {
+			case event := <-s.events:
+				if event.Type != core.EventError {
+					t.Fatalf("event type = %s, want %s", event.Type, core.EventError)
+				}
+				if event.Error == nil || event.Error.Error() != tt.wantError {
+					t.Fatalf("event error = %v, want %q", event.Error, tt.wantError)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for failed turn error")
+			}
+
+			if s.currentTurn != "" {
+				t.Fatalf("currentTurn = %q, want empty", s.currentTurn)
+			}
+			if len(s.pendingMsgs) != 0 {
+				t.Fatalf("pendingMsgs = %#v, want empty", s.pendingMsgs)
+			}
+			select {
+			case event := <-s.events:
+				t.Fatalf("unexpected follow-up event: %#v", event)
+			default:
+			}
+		})
+	}
+}
+
 func TestAppServerSession_RequestTimeoutIncludesBlockedStdinWrite(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

@@ -1169,7 +1169,15 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 	case "turn/completed":
 		var notif turnNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
-			s.completeTurn()
+			if notif.Turn.Status == "failed" || notif.Turn.Error != nil {
+				message := "codex app-server turn failed"
+				if notif.Turn.Error != nil && strings.TrimSpace(notif.Turn.Error.Message) != "" {
+					message += ": " + strings.TrimSpace(notif.Turn.Error.Message)
+				}
+				s.failTurn(errors.New(message))
+			} else {
+				s.completeTurn()
+			}
 		}
 
 	case "thread/status/changed":
@@ -1561,6 +1569,21 @@ func (s *appServerSession) completeTurn() {
 	s.stateMu.Unlock()
 	s.flushPendingAsText()
 	s.emit(core.Event{Type: core.EventResult, SessionID: s.CurrentSessionID(), Done: true})
+}
+
+// failTurn ends a failed app-server turn without converting it to an empty
+// response. Pending assistant fragments belong to the failed turn and must
+// not leak into a later turn.
+func (s *appServerSession) failTurn(err error) {
+	s.stateMu.Lock()
+	if s.currentTurn == "" {
+		s.stateMu.Unlock()
+		return
+	}
+	s.currentTurn = ""
+	s.pendingMsgs = s.pendingMsgs[:0]
+	s.stateMu.Unlock()
+	s.emitError(err)
 }
 
 func (s *appServerSession) flushPendingAsThinking() {
