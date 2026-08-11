@@ -517,6 +517,7 @@ const (
 	MsgPsSendFailed      MsgKey = "ps_send_failed"
 	MsgPsEmpty           MsgKey = "ps_empty"
 	MsgPsNoSession       MsgKey = "ps_no_session"
+	MsgSteerSent         MsgKey = "steer_sent"
 
 	MsgWhoamiTitle     MsgKey = "whoami_title"
 	MsgWhoamiCardTitle MsgKey = "whoami_card_title"
@@ -3372,6 +3373,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "目前沒有正在執行的任務。",
 		LangJapanese:           "現在実行中のタスクはありません。",
 		LangSpanish:            "No hay ninguna tarea en ejecución.",
+	},
+	MsgSteerSent: {
+		LangEnglish:            "✅ Guidance delivered to the running task.",
+		LangChinese:            "✅ 已引导当前任务。",
+		LangTraditionalChinese: "✅ 已引導目前任務。",
+		LangJapanese:           "✅ 実行中のタスクに指示を反映しました。",
+		LangSpanish:            "✅ Instrucción enviada a la tarea en curso.",
 	},
 	MsgWhoamiTitle: {
 		LangEnglish:            "🪪 **Your Identity**",
