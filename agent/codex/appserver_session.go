@@ -1169,7 +1169,7 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 	case "turn/completed":
 		var notif turnNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
-			if notif.Turn.Status == "failed" || notif.Turn.Error != nil {
+			if strings.EqualFold(strings.TrimSpace(notif.Turn.Status), "failed") || notif.Turn.Error != nil {
 				message := "codex app-server turn failed"
 				if notif.Turn.Error != nil && strings.TrimSpace(notif.Turn.Error.Message) != "" {
 					message += ": " + strings.TrimSpace(notif.Turn.Error.Message)

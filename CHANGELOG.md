@@ -1,5 +1,22 @@
 # Changelog
 
+## v1.5.1-beta.1 (2026-08-28)
+
+Beta since v1.5.0 stable — 16 merged PRs focused on Feishu/Weixin reliability, Claude Code /compact, Codex reasoning, and Cursor image attachments. See `changelogs/v1.5.1-beta.1.md` for the full contributor list.
+
+### New Features
+- **i18n**: Localize agent system prompts (cron/timer/send/relay) based on language config (#1721, #1655)
+- **Cursor**: Deliver image attachments via on-disk paths (#1709)
+
+### Fixed
+- **Feishu**: Chunked HTTP Range download for large resources (#1746); fail-closed on bot open_id discovery (#1725)
+- **Weixin**: Split send budget by reply vs push path (#1743); configurable inbound dedup (#1733)
+- **Claude Code**: Restore /compact and slash commands (#1737); bounded session teardown (#1714)
+- **Codex**: Propagate failed turns (#1730); max reasoning effort (#1727); /list session names (#1639)
+- **Pi**: Attachment @path refs (#1724); Windows build fix (#1738)
+- **Session**: /switch target idle reset exemption (#1734)
+- **Daemon/Skills**: Non-Linux build (#1710); plugin skill roots (#1713)
+
 ## Unreleased
 
 ### Added
@@ -13,6 +30,7 @@
 - **Feishu: outbound bot-to-bot @mention resolution** via new `mention_map` config option. Maps agent-friendly names (e.g. `BOT-A`) to Feishu open_ids so that when an agent writes `@BOT-A` in its reply, cc-connect converts it to a native Feishu `<at>` tag that triggers a real notification. Layered on top of `resolve_mentions` (group-member matching) with higher priority, so explicit config always wins (#1322).
 
 ### Fixed
+- **codex**: expose the `max` reasoning effort in `/reasoning` and Codex project configuration. The Codex adapter now accepts and forwards `max` instead of rejecting it and showing usage limited to `low|medium|high|xhigh` (#1726).
 - **codex**: `/model` chooser now surfaces `gpt-5.x` (and any future frontier chat model) when the model list is populated by fetching `GET /v1/models` from the provider. The previous hard-coded 11-entry allowlist (`o1/o3/o4/gpt-4o/gpt-4.1/codex-mini-latest`) had not been updated since 2026-03 and silently filtered out every `gpt-5*` variant (including `gpt-5.6-sol/terra/luna`) returned by the API, so users on `codex-cli >= 0.143` could not pick GPT-5.6 in cc-connect even after upgrading the CLI. The allowlist is replaced with pattern rules: accept the `gpt-*` / `chatgpt-*` / `codex-*` / `o1-*` / `o3-*` / `o4-*` / `o5-*` families plus the bare `o1/o3/o4/o5` IDs, and reject non-chat modalities (`embedding`, `whisper`, `tts`, `dall-e`, `audio-preview`, `realtime`, `transcribe`, `moderation`, `image`, `search-preview`). New frontier chat models are picked up automatically without a code change. Note: this only affects the API-fetch fallback path; users with an explicit `model_catalog_json` in `~/.codex/config.toml` or a `models = [...]` list in cc-connect's provider config were unaffected.
 - **Feishu recall fallback probes**: throttle repeated active-message recall checks so long-running turns do not continuously call platform message APIs.
 - **Skill discovery depth-1 only**: skill scanning no longer recurses into subdirectories. Only `<skill_dir>/<name>/SKILL.md` is registered; nested SKILL.md files (e.g. inside `<name>/references/...`) are treated as skill assets and ignored, matching the Claude Code CLI convention. Previously, nested SKILL.md files leaked into platform command menus as phantom slash commands (101 leaked commands from `frontend-design` skill alone) (#1304).
@@ -23,6 +41,7 @@
 - **kimi**: native Kimi Code CLI (Node.js `kimi-code`) dialect support (#1561). The newer CLI removed `--quiet` and `--resume`, moved the session resume hint from a plain-text line to a stdout JSON meta event (`{"role":"meta","type":"session.resume_hint",...}`), and emits assistant/tool `content` as a plain string instead of typed blocks — causing `error: unknown option`, silently dropped replies, and broken multi-turn continuity. The probe now also gates `--quiet` (emulated locally by suppressing thinking/tool events when unsupported), resume uses `-r <id>` on the modern dialect (the command the CLI's own hint prints), the meta resume-hint event restores the session ID, and the stream parser accepts both content shapes regardless of probed flavor. Session listing additionally scans `~/.kimi-code/sessions` with its `state.json` schema (`title`/`workDir`, honoring the workDir filter) and counts messages from `agents/main/wire.jsonl` so `/list` and `/delete` work for both CLI flavors. Legacy kimi-cli behavior is unchanged.
 - **core**: queue post-restart notification and dispatch on platform ready (#1383). Previously `/restart` sent the success notification immediately after engine startup, racing the platform's async connect window (Telegram: ~2.6s). On a not-yet-ready platform the send was silently dropped at debug log level. The notify is now queued on the engine and dispatched when the target platform reaches `OnPlatformReady`, with bounded retry (3 attempts, 0/500/1500 ms backoff) on transient send failure. Failed sends log at warn level. A 10s safety timeout drops the notify with a warning if the target platform never reaches ready, so startup is never blocked indefinitely. Also covers Discord / Weixin / Matrix (other AsyncRecoverablePlatform implementations) for free.
 - **core**: `SaveFilesToDisk` / `AppendFileRefs` always emit absolute paths (#1459). When a user configured a relative `work_dir` (e.g. `~/project` or `.cc-connect`), `SaveFilesToDisk` joined relative paths into the attachments directory and the resulting paths were passed verbatim into the agent's prompt. The spawned agent process — typically run from a different cwd by the platform adapter — could not resolve them and silently dropped every attachment. `SaveFilesToDisk` now calls `filepath.Abs(workDir)` up front and falls back to the raw value on error, and `AppendFileRefs` defensively absolutizes each entry. Both behaviors are covered by new tests for relative, absolute, and empty workDir; the empty-workDir case falls back to the process cwd so misconfigured deploys still get a writable attachments directory.
+- **Plugin skill roots**: Codex and Claude Code static skill discovery now includes plugin-provided `skills` directories while preserving depth-1 registration, so bundled plugin skills are listed without reintroducing nested reference-template leaks.
 
 - **core**: prevent same-name file attachments from overwriting each other. `SaveFilesToDisk` now scopes files by message ID, keeps duplicate names distinct within one message, and uses an atomic no-overwrite fallback for legacy callers without a message ID (#1552).
 
