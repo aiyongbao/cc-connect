@@ -67,6 +67,38 @@ func TestTimelineCard_InterruptedUsesWarningColor(t *testing.T) {
 	}
 }
 
+func TestTimelineCard_CompletedCollapsesWholeProcess(t *testing.T) {
+	payload := &core.ProgressCardPayload{
+		Style: "timeline", Lang: "zh", State: core.ProgressCardStateCompleted,
+		UpdatedAt: "2026-10-16T11:05:45+08:00",
+		Items: []core.ProgressCardEntry{
+			{Kind: core.ProgressEntryThinking, Text: "检查项目"},
+			{Kind: core.ProgressEntryToolUse, Tool: "Read", Text: "main.go", Status: "completed"},
+		},
+	}
+	elements := timelineCardElements(t, payload)
+	if len(elements) != 3 || elements[0]["tag"] != "collapsible_panel" || elements[0]["expanded"] != false {
+		t.Fatalf("completed process should be collapsed, got %+v", elements)
+	}
+	title := elements[0]["header"].(map[string]any)["title"].(map[string]any)["content"]
+	if title != "执行过程（2 条更新） ▸" {
+		t.Fatalf("unexpected completed process title: %v", title)
+	}
+	children := elements[0]["elements"].([]any)
+	if len(children) != 2 || children[1].(map[string]any)["tag"] != "collapsible_panel" {
+		t.Fatalf("completed process lost its inner groups: %+v", children)
+	}
+	if _, hasBackground := elements[0]["background_color"]; hasBackground {
+		t.Fatalf("completed outer panel should use the theme default, got %v", elements[0]["background_color"])
+	}
+	if children[1].(map[string]any)["background_color"] != "grey" {
+		t.Fatalf("inner tool panel background = %v, want grey", children[1].(map[string]any)["background_color"])
+	}
+	if elements[1]["tag"] != "hr" || elements[2]["tag"] != "markdown" {
+		t.Fatalf("update time should remain outside the process panel: %+v", elements)
+	}
+}
+
 // Only timeline cards show the timestamp of their latest write. It does not
 // update on its own while the agent is silent.
 func TestTimelineCard_ShowsOneUpdateTime(t *testing.T) {

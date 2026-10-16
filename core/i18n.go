@@ -711,6 +711,7 @@ var messages = map[MsgKey]map[Language]string{
 	MsgTimelineUpdatedAt:     {LangEnglish: "Updated: %s", LangChinese: "更新时间：%s", LangTraditionalChinese: "更新時間：%s", LangJapanese: "更新日時：%s", LangSpanish: "Actualizado: %s"},
 	MsgTimelineWaiting:       {LangEnglish: "Waiting for progress updates · Elapsed %s", LangChinese: "等待进度更新 · 已用时 %s", LangTraditionalChinese: "等待進度更新 · 已用時 %s", LangJapanese: "進捗更新を待っています · 経過 %s", LangSpanish: "Esperando actualizaciones de progreso · Tiempo transcurrido %s"},
 	MsgTimelineNoProgress:    {LangEnglish: "No progress details were available for this segment.", LangChinese: "本阶段没有可显示的过程详情。", LangTraditionalChinese: "本階段沒有可顯示的過程詳情。", LangJapanese: "この段階で表示できる進捗の詳細はありません。", LangSpanish: "No hubo detalles de progreso disponibles para esta etapa."},
+	MsgTimelineDetails:       {LangEnglish: "Execution details (%d updates)", LangChinese: "执行过程（%d 条更新）", LangTraditionalChinese: "執行過程（%d 條更新）", LangJapanese: "実行の詳細（%d 件の更新）", LangSpanish: "Detalles de ejecución (%d actualizaciones)"},
 	MsgStarting: {
 		LangEnglish:            "⏳ Processing...",
 		LangChinese:            "⏳ 处理中...",

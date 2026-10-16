@@ -26,6 +26,16 @@ func TestTimelineCard_AllToolCountsDefaultCollapsed(t *testing.T) {
 					t.Fatalf("want one collapsed panel, got %+v", elements)
 				}
 				panel := elements[0]
+				if state == core.ProgressCardStateCompleted {
+					if panel["header"].(map[string]any)["title"].(map[string]any)["content"] != fmt.Sprintf("执行过程（%d 条更新） ▸", count) {
+						t.Fatalf("incorrect completed details title: %v", panel["header"])
+					}
+					children := panel["elements"].([]any)
+					if len(children) != 1 {
+						t.Fatalf("completed card should contain one inner tool group: %+v", panel)
+					}
+					panel = children[0].(map[string]any)
+				}
 				title := panel["header"].(map[string]any)["title"].(map[string]any)["content"]
 				if title != fmt.Sprintf("%d 个工具调用 ▸", count) {
 					t.Fatalf("incorrect group title: %v", title)

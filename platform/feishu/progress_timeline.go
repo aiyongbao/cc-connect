@@ -70,6 +70,16 @@ func buildTimelineCard(payload *core.ProgressCardPayload) string {
 			elements = append(elements, rows...)
 		}
 	}
+	if payload.State == core.ProgressCardStateCompleted && len(elements) > 0 {
+		// Completed turns already have a separate final reply. Keep the
+		// historical progress available without letting it dominate the chat.
+		title := i18n.Tf(core.MsgTimelineDetails, len(payload.Items)) + " ▸"
+		panel := buildProgressPanel(title, false, elements)
+		// Leave the outer panel on Feishu's theme-aware default background.
+		// Inner tool groups retain their existing neutral grey treatment.
+		delete(panel, "background_color")
+		elements = []map[string]any{panel}
+	}
 	if updatedAt, err := time.Parse(time.RFC3339, payload.UpdatedAt); err == nil {
 		// This records the last card write, not a heartbeat or proof that the
 		// agent is still making progress. Feishu renders it in the reader's

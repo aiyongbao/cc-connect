@@ -26,6 +26,7 @@ const (
 	MsgTimelineUpdatedAt     MsgKey = "timeline_updated_at"
 	MsgTimelineNoProgress    MsgKey = "timeline_no_progress"
 	MsgTimelineWaiting       MsgKey = "timeline_waiting"
+	MsgTimelineDetails       MsgKey = "timeline_details"
 	// Paused cards are immutable; continuation opens a new card after the prompt.
 	ProgressCardStatePaused      ProgressCardState = "paused"
 	ProgressCardStateInterrupted ProgressCardState = "interrupted"
