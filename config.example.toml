@@ -773,6 +773,8 @@ level = "info" # debug, info, warn, error
 name = "my-backend"
 # reply_footer = false             # Master toggle for the per-turn reply footer (default: true / show)
 #                                   # 每条助手回复底部状态 footer 总开关（默认 true 显示）
+# shutdown_interruption_notice = true # Notify active turns before service shutdown/restart (default: false)
+#                                     # 服务停止/重启前通知仍在执行的会话（默认 false）
 # show_context_indicator = false   # Hide the footer's first line: model · [effort ·] out/in/cw/cr · ctx % (default: true)
 #                                   # 隐藏 footer 第一行：model · [effort ·] out/in/cw/cr · ctx %（默认 true 显示）
 # show_workdir_indicator = false   # Hide the footer's second line: workspace directory (default: true)

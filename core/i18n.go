@@ -202,6 +202,7 @@ const (
 	MsgToolResultFmtOk           MsgKey = "tool_result_fmt_ok"
 	MsgToolResultFmtFailed       MsgKey = "tool_result_fmt_failed"
 	MsgExecutionStopped          MsgKey = "execution_stopped"
+	MsgShutdownInterrupted       MsgKey = "shutdown_interrupted"
 	MsgSessionCloseFailed        MsgKey = "session_close_failed"
 	MsgSessionResumeUnsafe       MsgKey = "session_resume_unsafe"
 	MsgSessionCancelled          MsgKey = "session_cancelled"
@@ -776,6 +777,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "⏹ 執行已停止。",
 		LangJapanese:           "⏹ 実行を停止しました。",
 		LangSpanish:            "⏹ Ejecución detenida.",
+	},
+	MsgShutdownInterrupted: {
+		LangEnglish:            "⏹ Service is stopping, execution was interrupted.",
+		LangChinese:            "⏹ 服务即将停止，执行已中断。",
+		LangTraditionalChinese: "⏹ 服務即將停止，執行已中斷。",
+		LangJapanese:           "⏹ サービス停止のため、実行を中断しました。",
+		LangSpanish:            "⏹ El servicio se detendrá; la ejecución fue interrumpida.",
 	},
 	MsgSessionCloseFailed: {
 		LangEnglish:            "⚠️ Warning: the stopped session's background process could not be confirmed killed. It may still be running and using its old credentials.",

@@ -43,6 +43,11 @@ const (
 // platform does not block startup logging indefinitely.
 const defaultPendingRestartTimeout = 10 * time.Second
 
+// shutdownInterruptionNoticeTimeout bounds the best-effort notice sent before
+// the process tears down its platforms. A failed or slow platform must not
+// prevent the service from exiting.
+const shutdownInterruptionNoticeTimeout = 5 * time.Second
+
 // previewText truncates s to maxRunes runes for safe inclusion in debug logs.
 // Truncation uses runes (not bytes) so multi-byte characters render cleanly.
 // Newlines are replaced with literal "\n" to keep each log entry on one line.
@@ -455,9 +460,10 @@ type Engine struct {
 	//   line 2 — workspace directory                       (gated by showWorkdirIndicator)
 	// replyFooterEnabled is the master toggle: when false, no footer is emitted
 	// regardless of the per-line flags.
-	showContextIndicator bool
-	showWorkdirIndicator bool
-	replyFooterEnabled   bool
+	showContextIndicator       bool
+	showWorkdirIndicator       bool
+	replyFooterEnabled         bool
+	shutdownInterruptionNotice bool
 
 	// When true, /list etc. only show sessions tracked by cc-connect,
 	// hiding sessions created by direct CLI usage in the same work_dir.
@@ -1037,6 +1043,13 @@ func (e *Engine) SetShowWorkdirIndicator(show bool) {
 // no-ops.
 func (e *Engine) SetReplyFooterEnabled(show bool) {
 	e.replyFooterEnabled = show
+}
+
+// SetShutdownInterruptionNotice controls whether active turns receive a
+// user-visible shutdown notice before the engine tears down. It does not send
+// /stop or change the existing session cleanup behavior.
+func (e *Engine) SetShutdownInterruptionNotice(show bool) {
+	e.shutdownInterruptionNotice = show
 }
 
 // SetFilterExternalSessions controls whether /list, /switch, /delete, etc.
@@ -2417,10 +2430,70 @@ func (e *Engine) Start() error {
 	return nil
 }
 
+// interruptActiveSessionsBeforeShutdown seals active progress cards and, when
+// configured, sends a best-effort user-visible notice. Idle sessions remain
+// silent even when their agent process is still cached for reuse. The caller
+// must invoke this before cancelling e.ctx or stopping platforms.
+func (e *Engine) interruptActiveSessionsBeforeShutdown() {
+	type target struct {
+		platform    Platform
+		replyCtx    any
+		workspace   string
+		busySession *Session
+		timeline    *timelineProgress
+	}
+
+	e.interactiveMu.Lock()
+	targets := make([]target, 0, len(e.interactiveStates))
+	for _, state := range e.interactiveStates {
+		if state == nil {
+			continue
+		}
+		state.mu.Lock()
+		targets = append(targets, target{
+			platform:    state.platform,
+			replyCtx:    state.replyCtx,
+			workspace:   state.workspaceDir,
+			busySession: state.busySession,
+			timeline:    state.timeline,
+		})
+		state.mu.Unlock()
+	}
+	e.interactiveMu.Unlock()
+
+	for _, item := range targets {
+		if item.busySession == nil || !item.busySession.Busy() {
+			continue
+		}
+		// Always seal the existing timeline card before teardown. The config
+		// switch controls only the additional user-visible notice; leaving a
+		// card in "running" would be misleading even when notices are disabled.
+		if item.timeline != nil {
+			item.timeline.Finalize(ProgressCardStateInterrupted)
+		}
+		if !e.shutdownInterruptionNotice || item.platform == nil || item.replyCtx == nil {
+			continue
+		}
+		// Finalize uses the live engine context, so both operations must happen
+		// before Stop cancels that context or shuts down the platform.
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownInterruptionNoticeTimeout)
+		content := e.renderOutgoingContentForWorkspace(item.platform, e.i18n.T(MsgShutdownInterrupted), item.workspace)
+		if err := item.platform.Send(ctx, item.replyCtx, content); err != nil {
+			slog.Warn("shutdown interruption notice failed", "platform", item.platform.Name(), "error", err)
+		}
+		cancel()
+	}
+}
+
 func (e *Engine) Stop() error {
 	e.platformLifecycleMu.Lock()
 	e.stopping = true
 	e.platformLifecycleMu.Unlock()
+
+	// Notify while the engine context and platform connections are still alive.
+	// This is intentionally separate from /stop: shutdown will continue through
+	// the existing teardown path immediately afterward.
+	e.interruptActiveSessionsBeforeShutdown()
 
 	// Cancel first so late lifecycle callbacks observe shutdown immediately.
 	e.cancel()

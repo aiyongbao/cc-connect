@@ -37,7 +37,7 @@ func buildTimelineCard(payload *core.ProgressCardPayload) string {
 	case core.ProgressCardStatePaused:
 		titleKey, color = core.MsgTimelinePaused, "orange"
 	case core.ProgressCardStateInterrupted:
-		titleKey, color = core.MsgTimelineInterrupted, "grey"
+		titleKey, color = core.MsgTimelineInterrupted, "orange"
 	case core.ProgressCardStateFailed:
 		titleKey, color = core.MsgTimelineFailed, "red"
 	}

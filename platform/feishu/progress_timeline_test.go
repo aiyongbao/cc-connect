@@ -49,6 +49,24 @@ func TestTimelineCard_OrderedGroupsWithoutStopButton(t *testing.T) {
 	}
 }
 
+func TestTimelineCard_InterruptedUsesWarningColor(t *testing.T) {
+	payload := &core.ProgressCardPayload{
+		Style: "timeline", Lang: "zh", State: core.ProgressCardStateInterrupted,
+		Items: []core.ProgressCardEntry{{Kind: core.ProgressEntryThinking, Text: "执行被停止"}},
+	}
+	var card struct {
+		Header struct {
+			Template string `json:"template"`
+		} `json:"header"`
+	}
+	if err := json.Unmarshal([]byte(buildProgressCardJSONFromPayload(payload)), &card); err != nil {
+		t.Fatal(err)
+	}
+	if card.Header.Template != "orange" {
+		t.Fatalf("interrupted card template = %q, want orange", card.Header.Template)
+	}
+}
+
 // Only timeline cards show the timestamp of their latest write. It does not
 // update on its own while the agent is silent.
 func TestTimelineCard_ShowsOneUpdateTime(t *testing.T) {

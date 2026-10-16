@@ -533,11 +533,15 @@ type ProjectConfig struct {
 	ShowWorkdirIndicator *bool `toml:"show_workdir_indicator,omitempty"`
 	// ReplyFooter: nil/true = render the reply footer; false = disable it
 	// entirely (the per-line indicator flags above become no-ops).
-	ReplyFooter      *bool        `toml:"reply_footer,omitempty"`
-	InjectSender     *bool        `toml:"inject_sender,omitempty"`     // prepend sender identity (platform + user ID) to each message sent to the agent
-	DisabledCommands []string     `toml:"disabled_commands,omitempty"` // commands to disable for this project (e.g. ["restart", "upgrade"])
-	AdminFrom        string       `toml:"admin_from,omitempty"`        // comma-separated user IDs allowed to run privileged commands; "*" = all allowed users
-	Users            *UsersConfig `toml:"users,omitempty"`             // per-user role config; nil = legacy behavior
+	ReplyFooter *bool `toml:"reply_footer,omitempty"`
+	// ShutdownInterruptionNotice sends a visible notice to turns that are
+	// still running when cc-connect shuts down or restarts. It does not alter
+	// the existing agent/session teardown behavior.
+	ShutdownInterruptionNotice *bool        `toml:"shutdown_interruption_notice,omitempty"`
+	InjectSender               *bool        `toml:"inject_sender,omitempty"`     // prepend sender identity (platform + user ID) to each message sent to the agent
+	DisabledCommands           []string     `toml:"disabled_commands,omitempty"` // commands to disable for this project (e.g. ["restart", "upgrade"])
+	AdminFrom                  string       `toml:"admin_from,omitempty"`        // comma-separated user IDs allowed to run privileged commands; "*" = all allowed users
+	Users                      *UsersConfig `toml:"users,omitempty"`             // per-user role config; nil = legacy behavior
 	// WorkspaceIdleTimeoutMinsLegacy is the deprecated per-project form of
 	// the workspace idle reaper timeout. New configs should set the top-level
 	// Config.WorkspaceIdleTimeoutMins instead. When the top-level field is
