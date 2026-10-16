@@ -11,9 +11,10 @@ import (
 )
 
 const (
-	progressStyleLegacy  = "legacy"
-	progressStyleCompact = "compact"
-	progressStyleCard    = "card"
+	progressStyleLegacy   = "legacy"
+	progressStyleCompact  = "compact"
+	progressStyleCard     = "card"
+	progressStyleTimeline = "timeline"
 
 	// ProgressCardPayloadPrefix marks a structured payload for card-style progress.
 	ProgressCardPayloadPrefix = "__cc_connect_progress_card_v1__:"
@@ -56,13 +57,17 @@ type ProgressCardEntry struct {
 // ProgressCardPayload carries structured progress entries for platforms that
 // render custom progress cards.
 type ProgressCardPayload struct {
-	Version   int                 `json:"version,omitempty"`
-	Agent     string              `json:"agent,omitempty"`
-	Lang      string              `json:"lang,omitempty"`
-	State     ProgressCardState   `json:"state,omitempty"`
-	Entries   []string            `json:"entries,omitempty"` // legacy fallback
-	Items     []ProgressCardEntry `json:"items,omitempty"`   // ordered typed events
-	Truncated bool                `json:"truncated"`
+	Version    int                 `json:"version,omitempty"`
+	Style      string              `json:"style,omitempty"`
+	UpdatedAt  string              `json:"updated_at,omitempty"` // RFC3339 time of the card update attempt; timeline only.
+	TurnID     string              `json:"turn_id,omitempty"`
+	SessionKey string              `json:"session_key,omitempty"`
+	Agent      string              `json:"agent,omitempty"`
+	Lang       string              `json:"lang,omitempty"`
+	State      ProgressCardState   `json:"state,omitempty"`
+	Entries    []string            `json:"entries,omitempty"` // legacy fallback
+	Items      []ProgressCardEntry `json:"items,omitempty"`   // ordered typed events
+	Truncated  bool                `json:"truncated"`
 }
 
 // BuildProgressCardPayload encodes progress entries into a transport string.
@@ -241,6 +246,8 @@ func normalizeProgressStyle(style string) string {
 		return progressStyleCompact
 	case progressStyleCard:
 		return progressStyleCard
+	case progressStyleTimeline:
+		return progressStyleTimeline
 	default:
 		return progressStyleLegacy
 	}

@@ -696,6 +696,20 @@ const (
 )
 
 var messages = map[MsgKey]map[Language]string{
+	MsgTimelineRunning:       {LangEnglish: "Running", LangChinese: "执行中", LangTraditionalChinese: "執行中", LangJapanese: "実行中", LangSpanish: "En curso"},
+	MsgTimelineCompleted:     {LangEnglish: "Completed", LangChinese: "已完成", LangTraditionalChinese: "已完成", LangJapanese: "完了", LangSpanish: "Completado"},
+	MsgTimelinePaused:        {LangEnglish: "Waiting for your response", LangChinese: "等待你的选择", LangTraditionalChinese: "等待你的選擇", LangJapanese: "回答を待っています", LangSpanish: "Esperando tu respuesta"},
+	MsgTimelineInterrupted:   {LangEnglish: "Interrupted", LangChinese: "已被中断", LangTraditionalChinese: "已被中斷", LangJapanese: "中断されました", LangSpanish: "Interrumpido"},
+	MsgTimelineFailed:        {LangEnglish: "Failed", LangChinese: "执行失败", LangTraditionalChinese: "執行失敗", LangJapanese: "失敗", LangSpanish: "Fallido"},
+	MsgTimelineStop:          {LangEnglish: "⏹ Stop", LangChinese: "⏹ 停止", LangTraditionalChinese: "⏹ 停止", LangJapanese: "⏹ 停止", LangSpanish: "⏹ Detener"},
+	MsgTimelineTruncated:     {LangEnglish: "Showing latest updates only.", LangChinese: "仅显示最近更新。", LangTraditionalChinese: "僅顯示最近更新。", LangJapanese: "最新の更新のみ表示しています。", LangSpanish: "Solo se muestran las últimas actualizaciones."},
+	MsgTimelineToolGroup:     {LangEnglish: "%d tool calls", LangChinese: "%d 个工具调用", LangTraditionalChinese: "%d 個工具調用", LangJapanese: "ツール呼び出し %d 件", LangSpanish: "%d llamadas a herramientas"},
+	MsgTimelineToolRunning:   {LangEnglish: "Running", LangChinese: "执行中", LangTraditionalChinese: "執行中", LangJapanese: "実行中", LangSpanish: "En curso"},
+	MsgTimelineToolCompleted: {LangEnglish: "Completed", LangChinese: "已完成", LangTraditionalChinese: "已完成", LangJapanese: "完了", LangSpanish: "Completado"},
+	MsgTimelineToolFailed:    {LangEnglish: "Failed", LangChinese: "失败", LangTraditionalChinese: "失敗", LangJapanese: "失敗", LangSpanish: "Fallido"},
+	MsgTimelineUpdatedAt:     {LangEnglish: "Updated: %s", LangChinese: "更新时间：%s", LangTraditionalChinese: "更新時間：%s", LangJapanese: "更新日時：%s", LangSpanish: "Actualizado: %s"},
+	MsgTimelineWaiting:       {LangEnglish: "Waiting for progress updates · Elapsed %s", LangChinese: "等待进度更新 · 已用时 %s", LangTraditionalChinese: "等待進度更新 · 已用時 %s", LangJapanese: "進捗更新を待っています · 経過 %s", LangSpanish: "Esperando actualizaciones de progreso · Tiempo transcurrido %s"},
+	MsgTimelineNoProgress:    {LangEnglish: "No progress details were available for this segment.", LangChinese: "本阶段没有可显示的过程详情。", LangTraditionalChinese: "本階段沒有可顯示的過程詳情。", LangJapanese: "この段階で表示できる進捗の詳細はありません。", LangSpanish: "No hubo detalles de progreso disponibles para esta etapa."},
 	MsgStarting: {
 		LangEnglish:            "⏳ Processing...",
 		LangChinese:            "⏳ 处理中...",

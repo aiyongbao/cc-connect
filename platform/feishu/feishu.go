@@ -412,10 +412,10 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 		switch strings.ToLower(strings.TrimSpace(v)) {
 		case "", "legacy":
 			progressStyle = "legacy"
-		case "compact", "card":
+		case "compact", "card", "timeline":
 			progressStyle = strings.ToLower(strings.TrimSpace(v))
 		default:
-			return nil, fmt.Errorf("%s: invalid progress_style %q (want legacy, compact, or card)", name, v)
+			return nil, fmt.Errorf("%s: invalid progress_style %q (want legacy, compact, card, or timeline)", name, v)
 		}
 	}
 	useInteractiveCard := true
@@ -5107,6 +5107,9 @@ func appendProgressGroupedElements(elements []map[string]any, items []core.Progr
 }
 
 func buildProgressCardJSONFromPayload(payload *core.ProgressCardPayload) string {
+	if payload.Style == "timeline" {
+		return buildTimelineCard(payload)
+	}
 	items := normalizeProgressItems(payload)
 	if len(items) == 0 {
 		return buildCardJSON(" ")

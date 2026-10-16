@@ -126,7 +126,9 @@ level = "info" # debug, info, warn, error
 
 # [display]
 # mode = "full"             # Display mode: "full" (default), "compact", or "quiet"
-# card_mode = "legacy"      # Card rendering: "legacy" (default) or "rich" (Feishu Card 2.0)
+# card_mode = "legacy"      # Card rendering: "legacy" (default), "rich", or "timeline" (ordered Feishu progress; final reply separate)
+#                           # timeline: 飞书按顺序合并思考/工具，连续工具默认折叠（展开仅显示简要调用）；最终回复另发；选择后新开进度卡，使用 /stop 停止。
+#                           # Set here globally, or use [projects.display] below for one project only.
 #                           # full: show thinking + tool messages as separate messages
 #                           #       显示思考和工具消息，每条单独发送
 #                           # compact: hide thinking/tool, each text segment sent separately
@@ -156,6 +158,7 @@ level = "info" # debug, info, warn, error
 # [[projects]]
 # name = "noisy-project"
 # [projects.display]
+# card_mode = "timeline"    # Enable ordered Feishu progress for this project only / 仅本项目启用
 # thinking_messages = false  # Override only this field; others inherit from global
 # tool_messages = false
 # hide_agent_footer = true   # Hide agent-emitted model/token footer only for this project
@@ -1100,8 +1103,9 @@ app_secret = "your-feishu-app-secret"
 # 将未 @ 机器人的群消息作为下一次触发的上下文共享；消息本身不会触发回复。
 # reply_to_trigger = true   # Default: bot uses “reply to message” API (quotes the user’s message). Set false to post plain chat messages instead.
 #                           # 默认 true：用「回复消息」API（引用用户消息）。设为 false 则在会话里发普通消息、不引用触发消息。
-# progress_style = "legacy" # Progress rendering style: legacy | compact | card
-#                           # 进度消息展示风格：legacy（逐条消息）| compact（单消息持续更新）| card（结构化卡片）
+# progress_style = "legacy" # Progress rendering style: legacy | compact | card | timeline
+#                           # 进度消息展示风格：legacy（逐条消息）| compact（单消息持续更新）| card（结构化卡片）| timeline（顺序进度，最终回复另发）
+#                           # timeline may also be enabled by display.card_mode; either setting is sufficient.
 # resolve_mentions = false  # Auto-resolve @name in outgoing messages to Feishu at tags by matching group member names
 #                           # 自动将发出消息中的 @显示名 替换为飞书 at 标签（通过匹配群成员名称）
 # mention_map = { BOT-A = "ou_bot_a_open_id", BOT-B = "ou_bot_b_open_id" }
@@ -1147,7 +1151,7 @@ app_secret = "your-feishu-app-secret"
 # allow_from = "*"
 # reaction_emoji = "OnIt"
 # done_emoji = "none"
-# progress_style = "legacy"  # legacy | compact | card
+# progress_style = "legacy"  # legacy | compact | card | timeline
 
 # DingTalk / 钉钉 (uncomment to enable / 取消注释以启用)
 # 1. Create an app at https://open-dev.dingtalk.com / 在钉钉开放平台创建应用
