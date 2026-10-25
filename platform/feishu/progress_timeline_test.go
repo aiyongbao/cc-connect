@@ -189,6 +189,13 @@ func TestTimelineCard_TerminalWithoutProgressHidesPlaceholder(t *testing.T) {
 		if elements := timelineCardElements(t, payload); len(elements) != 0 {
 			t.Fatalf("%s card should hide the placeholder body, got %+v", state, elements)
 		}
+		// 飞书对空 body 仍渲染默认内边距，且 schema 2.0 强制要求
+		// body 字段（缺失报 "card must have body"），因此终态无过程时
+		// 必须输出上下内边距为 0 的空 body，避免头部下方留白。
+		raw := buildTimelineCard(payload)
+		if !strings.Contains(raw, "\"padding\":\"0px 16px\"") {
+			t.Fatalf("%s card should collapse the empty body padding, got %s", state, raw)
+		}
 	}
 	// 对照：存在真实过程时，“执行过程”折叠面板保持原行为。
 	payload := &core.ProgressCardPayload{

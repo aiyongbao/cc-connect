@@ -87,7 +87,15 @@ func buildTimelineCard(payload *core.ProgressCardPayload) string {
 	card := map[string]any{
 		"schema": "2.0", "config": map[string]any{"wide_screen_mode": true},
 		"header": map[string]any{"title": timelineHeaderTitle(i18n, titleKey), "template": color, "text_tag_list": timelineHeaderClockTags(payload.UpdatedAt)},
-		"body":   map[string]any{"elements": elements},
+	}
+	// 终态无过程时不输出 body：飞书对空 body 仍渲染默认内边距，
+	// 头部下方会留下一条空白条。但飞书 schema 2.0 强制要求 body
+	// （缺失时报 "card must have body"），因此保留空 body 并把上下
+	// 内边距压为 0，只保留左右留白。
+	if len(elements) > 0 {
+		card["body"] = map[string]any{"elements": elements}
+	} else {
+		card["body"] = map[string]any{"elements": []map[string]any{}, "padding": "0px 16px"}
 	}
 	b, _ := json.Marshal(card)
 	return string(b)
