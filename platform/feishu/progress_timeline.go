@@ -2,7 +2,6 @@ package feishu
 
 import (
 	"encoding/json"
-	"strconv"
 	"strings"
 	"time"
 
@@ -80,26 +79,37 @@ func buildTimelineCard(payload *core.ProgressCardPayload) string {
 		delete(panel, "background_color")
 		elements = []map[string]any{panel}
 	}
-	if updatedAt, err := time.Parse(time.RFC3339, payload.UpdatedAt); err == nil {
-		// This records the last card write, not a heartbeat or proof that the
-		// agent is still making progress. Feishu renders it in the reader's
-		// timezone rather than the server's timezone.
-		clock := "<local_datetime millisecond='" + strconv.FormatInt(updatedAt.UnixMilli(), 10) + "' format_type='time_sec'></local_datetime>"
-		// Match the final reply's separated, small footer treatment so the
-		// timestamp is distinguishable from reasoning and tool content.
-		elements = append(elements, map[string]any{"tag": "hr"})
-		elements = append(elements, map[string]any{
-			"tag": "markdown", "text_size": "notation",
-			"content": "<font color='grey'>⏱ " + i18n.Tf(core.MsgTimelineUpdatedAt, clock) + "</font>",
-		})
-	}
 	card := map[string]any{
 		"schema": "2.0", "config": map[string]any{"wide_screen_mode": true},
-		"header": map[string]any{"title": map[string]any{"tag": "plain_text", "content": i18n.T(titleKey)}, "template": color},
+		"header": map[string]any{"title": timelineHeaderTitle(i18n, titleKey), "template": color, "text_tag_list": timelineHeaderClockTags(payload.UpdatedAt)},
 		"body":   map[string]any{"elements": elements},
 	}
 	b, _ := json.Marshal(card)
 	return string(b)
+}
+
+// timelineHeaderTitle keeps the state label as plain text; the clock moves to
+// the header's text_tag_list so Feishu renders it as a small metadata badge.
+func timelineHeaderTitle(i18n *core.I18n, titleKey core.MsgKey) map[string]any {
+	return map[string]any{"tag": "plain_text", "content": i18n.T(titleKey)}
+}
+
+// timelineHeaderClockTags renders the last-update clock as a small neutral
+// badge beside the state title. Feishu shows it in the reader's timezone and
+// keeps the body focused on progress content.
+func timelineHeaderClockTags(updatedAt string) []map[string]any {
+	t, err := time.Parse(time.RFC3339, updatedAt)
+	if err != nil {
+		return nil
+	}
+	// text_tag_list renders plain text only; the dynamic local_datetime tag is
+	// a body-only markdown component, so format the clock server-side.
+	clock := t.Format("15:04:05")
+	return []map[string]any{{
+		"tag":   "text_tag",
+		"text":  map[string]any{"tag": "plain_text", "content": clock},
+		"color": "neutral",
+	}}
 }
 
 // timelineCardSegments groups only adjacent entries of the same kind, so tool

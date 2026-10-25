@@ -2,6 +2,7 @@ package feishu
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -77,7 +78,7 @@ func TestTimelineCard_CompletedCollapsesWholeProcess(t *testing.T) {
 		},
 	}
 	elements := timelineCardElements(t, payload)
-	if len(elements) != 3 || elements[0]["tag"] != "collapsible_panel" || elements[0]["expanded"] != false {
+	if len(elements) != 1 || elements[0]["tag"] != "collapsible_panel" || elements[0]["expanded"] != false {
 		t.Fatalf("completed process should be collapsed, got %+v", elements)
 	}
 	title := elements[0]["header"].(map[string]any)["title"].(map[string]any)["content"]
@@ -94,9 +95,6 @@ func TestTimelineCard_CompletedCollapsesWholeProcess(t *testing.T) {
 	if children[1].(map[string]any)["background_color"] != "grey" {
 		t.Fatalf("inner tool panel background = %v, want grey", children[1].(map[string]any)["background_color"])
 	}
-	if elements[1]["tag"] != "hr" || elements[2]["tag"] != "markdown" {
-		t.Fatalf("update time should remain outside the process panel: %+v", elements)
-	}
 }
 
 // Only timeline cards show the timestamp of their latest write. It does not
@@ -107,9 +105,35 @@ func TestTimelineCard_ShowsOneUpdateTime(t *testing.T) {
 		UpdatedAt: "2026-10-16T11:05:45+08:00",
 		Items:     []core.ProgressCardEntry{{Kind: core.ProgressEntryThinking, Text: "检查中"}},
 	}
-	elements := timelineCardElements(t, payload)
-	if len(elements) != 3 || elements[1]["tag"] != "hr" || elements[2]["text_size"] != "notation" || elements[2]["content"] != "<font color='grey'>⏱ 更新时间：<local_datetime millisecond='1792119945000' format_type='time_sec'></local_datetime></font>" {
-		t.Fatalf("want one quiet update-time footer, got %+v", elements)
+	card := struct {
+		Header struct {
+			Title struct {
+				Content string `json:"content"`
+			} `json:"title"`
+			TextTagList []map[string]any `json:"text_tag_list"`
+		} `json:"header"`
+		Body struct {
+			Elements []map[string]any `json:"elements"`
+		} `json:"body"`
+	}{}
+	if err := json.Unmarshal([]byte(buildProgressCardJSONFromPayload(payload)), &card); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(card.Header.Title.Content, "执行中") {
+		t.Fatalf("header title should keep the state label, got %q", card.Header.Title.Content)
+	}
+	if len(card.Header.TextTagList) != 1 {
+		t.Fatalf("want one header clock tag, got %+v", card.Header.TextTagList)
+	}
+	tagText, _ := card.Header.TextTagList[0]["text"].(map[string]any)
+	// 2026-10-16T11:05:45+08:00 formatted server-side as HH:MM:SS.
+	if content, _ := tagText["content"].(string); content != "11:05:45" {
+		t.Fatalf("clock tag should show the time only, got %v", tagText)
+	}
+	for _, el := range card.Body.Elements {
+		if strings.Contains(fmt.Sprint(el["content"]), "更新时间") {
+			t.Fatalf("update time should not appear in the body: %+v", el)
+		}
 	}
 	payload.Style = "compact"
 	if strings.Contains(buildProgressCardJSONFromPayload(payload), "更新时间") {
