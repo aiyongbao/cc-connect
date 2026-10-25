@@ -176,3 +176,27 @@ func TestTimelineCard_SanitizesMarkdownWithSharedTableBudget(t *testing.T) {
 		}
 	}
 }
+
+// 回归：从未产生思考或工具进度的对话，终态卡片不应再渲染只有占位文本的
+// “执行过程”面板；body 留空，由头部的终态标题表达结果。
+func TestTimelineCard_TerminalWithoutProgressHidesPlaceholder(t *testing.T) {
+	placeholder := core.NewI18n(core.LangChinese).T(core.MsgTimelineNoProgress)
+	for _, state := range []core.ProgressCardState{core.ProgressCardStateCompleted, core.ProgressCardStateInterrupted, core.ProgressCardStateFailed} {
+		payload := &core.ProgressCardPayload{
+			Style: "timeline", Lang: "zh", State: state,
+			Items: []core.ProgressCardEntry{{Kind: core.ProgressEntryInfo, Text: placeholder}},
+		}
+		if elements := timelineCardElements(t, payload); len(elements) != 0 {
+			t.Fatalf("%s card should hide the placeholder body, got %+v", state, elements)
+		}
+	}
+	// 对照：存在真实过程时，“执行过程”折叠面板保持原行为。
+	payload := &core.ProgressCardPayload{
+		Style: "timeline", Lang: "zh", State: core.ProgressCardStateCompleted,
+		Items: []core.ProgressCardEntry{{Kind: core.ProgressEntryThinking, Text: "检查中"}},
+	}
+	elements := timelineCardElements(t, payload)
+	if len(elements) != 1 || elements[0]["tag"] != "collapsible_panel" {
+		t.Fatalf("real progress should keep the details panel, got %+v", elements)
+	}
+}

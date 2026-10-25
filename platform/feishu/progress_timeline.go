@@ -41,6 +41,11 @@ func buildTimelineCard(payload *core.ProgressCardPayload) string {
 		titleKey, color = core.MsgTimelineFailed, "red"
 	}
 	segments := timelineCardSegments(payload, i18n)
+	// 终态若只剩内部占位行（本次执行从未产生思考或工具进度），隐藏过程内容：
+	// 头部的终态标题已表达结果，避免渲染只有占位文本的空“执行过程”面板。
+	if timelineIsTerminalWithoutProgress(payload, i18n) {
+		segments = nil
+	}
 	// Sanitize all blocks together so tables share the same per-card budget.
 	// Keep the segment metadata alongside the sanitized content to preserve the
 	// exact position of every collapsed tool group among reasoning blocks.
@@ -86,6 +91,22 @@ func buildTimelineCard(payload *core.ProgressCardPayload) string {
 	}
 	b, _ := json.Marshal(card)
 	return string(b)
+}
+
+// timelineIsTerminalWithoutProgress reports whether a finished payload still
+// carries only the internal placeholder row that finishNoProgressLocked keeps
+// for adapters that never emitted progress events. The header already shows
+// the terminal state, so an empty body reads better than a panel whose only
+// content is "no details available".
+func timelineIsTerminalWithoutProgress(payload *core.ProgressCardPayload, i18n *core.I18n) bool {
+	switch payload.State {
+	case core.ProgressCardStateCompleted, core.ProgressCardStateInterrupted, core.ProgressCardStateFailed:
+	default:
+		return false
+	}
+	return len(payload.Items) == 1 &&
+		payload.Items[0].Kind == core.ProgressEntryInfo &&
+		payload.Items[0].Text == i18n.T(core.MsgTimelineNoProgress)
 }
 
 // timelineHeaderTitle keeps the state label as plain text; the clock moves to
