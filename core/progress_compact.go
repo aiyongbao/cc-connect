@@ -71,6 +71,8 @@ type ProgressCardPayload struct {
 	Entries    []string            `json:"entries,omitempty"` // legacy fallback
 	Items      []ProgressCardEntry `json:"items,omitempty"`   // ordered typed events
 	Truncated  bool                `json:"truncated"`
+	// FinalAnswer carries the reply of a quiet turn (no thinking or tool progress ever rendered a card). The terminal card then doubles as the answer message instead of leaving a header-only empty body.
+	FinalAnswer string `json:"final_answer,omitempty"`
 }
 
 // BuildProgressCardPayload encodes progress entries into a transport string.

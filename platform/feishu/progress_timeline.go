@@ -46,6 +46,12 @@ func buildTimelineCard(payload *core.ProgressCardPayload) string {
 	if timelineIsTerminalWithoutProgress(payload, i18n) {
 		segments = nil
 	}
+	if payload.FinalAnswer != "" {
+		// Quiet turn: the answer itself becomes the body of the completed
+		// card, so the user still gets the coloured header without an empty
+		// placeholder body beneath it.
+		segments = append([]timelineSegment{{kind: core.ProgressEntryInfo, texts: []string{payload.FinalAnswer}}}, segments...)
+	}
 	// Sanitize all blocks together so tables share the same per-card budget.
 	// Keep the segment metadata alongside the sanitized content to preserve the
 	// exact position of every collapsed tool group among reasoning blocks.
@@ -74,7 +80,7 @@ func buildTimelineCard(payload *core.ProgressCardPayload) string {
 			elements = append(elements, rows...)
 		}
 	}
-	if payload.State == core.ProgressCardStateCompleted && len(elements) > 0 {
+	if payload.State == core.ProgressCardStateCompleted && payload.FinalAnswer == "" && len(elements) > 0 {
 		// Completed turns already have a separate final reply. Keep the
 		// historical progress available without letting it dominate the chat.
 		title := i18n.Tf(core.MsgTimelineDetails, len(payload.Items)) + " ▸"

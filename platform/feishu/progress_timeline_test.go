@@ -207,3 +207,23 @@ func TestTimelineCard_TerminalWithoutProgressHidesPlaceholder(t *testing.T) {
 		t.Fatalf("real progress should keep the details panel, got %+v", elements)
 	}
 }
+
+// 回归：无过程对话的最终答复内嵌在终态卡 body 中——正文作为普通元素
+// 直接渲染，不得被“执行过程”折叠面板包裹。
+func TestTimelineCard_QuietAnswerRendersAsPlainBody(t *testing.T) {
+	payload := &core.ProgressCardPayload{
+		Style: "timeline", Lang: "zh", State: core.ProgressCardStateCompleted,
+		FinalAnswer: "quiet answer body\n\n<font color='grey'>⏱ 用时 5 秒</font>",
+	}
+	raw := buildProgressCardJSONFromPayload(payload)
+	elements := timelineCardElements(t, payload)
+	if len(elements) != 1 || elements[0]["tag"] != "markdown" {
+		t.Fatalf("answer should be the only plain body element, got %+v", elements)
+	}
+	if content, _ := elements[0]["content"].(string); !strings.Contains(content, "quiet answer body") {
+		t.Fatalf("answer content lost: %v", elements[0])
+	}
+	if strings.Contains(raw, "执行过程") || strings.Contains(raw, "collapsible_panel") {
+		t.Fatalf("answer card must not be wrapped in a progress panel: %s", raw)
+	}
+}

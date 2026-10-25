@@ -202,6 +202,31 @@ func TestTimelineProgress_RealEventCancelsNoProgressNotice(t *testing.T) {
 	w.Finalize(ProgressCardStateCompleted)
 }
 
+// A quiet turn's final answer is embedded in the terminal card via
+// SetFinalAnswer: the card must flush even though no progress entry arrived,
+// and the answer must survive on the payload for the renderer.
+func TestTimelineProgress_SetFinalAnswerFlushesTerminalCard(t *testing.T) {
+	state, p := timelineTestState()
+	w := newTimelineProgressLocked(context.Background(), state, "test:u", "codex", LangChinese, nil, "timeline")
+	t.Cleanup(func() { w.Finalize(ProgressCardStateCompleted) })
+	w.Start()
+	if got := len(p.getPreviewOpens()); got != 0 {
+		t.Fatalf("quiet turn rendered %d cards before completion, want 0", got)
+	}
+	w.Finalize(ProgressCardStateCompleted)
+	if got := len(p.getPreviewOpens()); got != 0 {
+		t.Fatalf("answer-less terminal card was rendered")
+	}
+	w.SetFinalAnswer("quiet answer body")
+	if len(p.getPreviewOpens()) != 1 {
+		t.Fatal("final answer did not flush the terminal card")
+	}
+	payload := lastTimelinePayload(t, p)
+	if payload.State != ProgressCardStateCompleted || payload.FinalAnswer != "quiet answer body" {
+		t.Fatalf("terminal card lost the embedded answer: %+v", payload)
+	}
+}
+
 // Stop and permission paths can seal a segment before any visible agent event.
 // Such segments must never render a card; the final plain reply is the only
 // message the user sees for a quiet turn.

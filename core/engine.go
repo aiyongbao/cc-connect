@@ -6758,7 +6758,17 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						statusFooter = elapsed
 					}
 				}
-				if !sendChunksWithStatusFooter(e.ctx, p, replyCtx, fullResponse, statusFooter, sendWorkspaceWithError) {
+				// A quiet turn (no thinking or tool progress) never rendered a card:
+				// embed the answer in the terminal card so the user still gets the
+				// completed header and colour. Oversized answers fall back to the
+				// plain-message path because of the platform card size budget.
+				answer := fullResponse
+				if statusFooter != "" {
+					answer += "\n\n<font color='grey'>" + statusFooter + "</font>"
+				}
+				if !timeline.HasRenderedCard() && !isSilent && strings.TrimSpace(answer) != "" && len(answer) <= 20000 {
+					timeline.SetFinalAnswer(answer)
+				} else if !sendChunksWithStatusFooter(e.ctx, p, replyCtx, fullResponse, statusFooter, sendWorkspaceWithError) {
 					return
 				}
 			} else if toolCount > 0 && segmentStart > 0 {

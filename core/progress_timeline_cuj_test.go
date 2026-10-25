@@ -179,7 +179,10 @@ func TestTimelineFinalReply_HiddenToolsDoNotReplaceFinalAnswerWithDraft(t *testi
 		{Type: EventResult, Content: "authoritative final answer", Done: true},
 	}, 0)
 	sendTimelineCUJ(env, p, "start")
-	env.waitFor("final answer", 2*time.Second, func() bool { return strings.Contains(strings.Join(p.getSent(), "\n"), "authoritative final answer") })
+	env.waitFor("final answer", 2*time.Second, func() bool {
+		rendered := strings.Join(p.getSent(), "\n") + strings.Join(p.getPreviewOpens(), "\n")
+		return strings.Contains(rendered, "authoritative final answer")
+	})
 	if strings.Contains(strings.Join(p.getSent(), "\n"), "draft") {
 		t.Fatal("draft replaced final answer")
 	}
