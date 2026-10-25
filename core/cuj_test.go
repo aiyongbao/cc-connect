@@ -2363,6 +2363,10 @@ type cujStreamingPlatform struct {
 	mu             sync.Mutex
 	previewOpens   []string
 	previewUpdates []cujStreamingUpdate
+	// cardTimeline records opens and updates in the exact order the platform
+	// received them, so tests can ask for the latest card content across
+	// segments instead of guessing whether it arrived as an open or an update.
+	cardTimeline []string
 	nextHandle     int
 }
 
@@ -2371,6 +2375,7 @@ func (p *cujStreamingPlatform) SendPreviewStart(_ context.Context, _ any, conten
 	p.nextHandle++
 	handle := fmt.Sprintf("preview-%d", p.nextHandle)
 	p.previewOpens = append(p.previewOpens, content)
+	p.cardTimeline = append(p.cardTimeline, content)
 	p.mu.Unlock()
 	return handle, nil
 }
@@ -2378,6 +2383,7 @@ func (p *cujStreamingPlatform) SendPreviewStart(_ context.Context, _ any, conten
 func (p *cujStreamingPlatform) UpdateMessage(_ context.Context, handle any, content string) error {
 	p.mu.Lock()
 	p.previewUpdates = append(p.previewUpdates, cujStreamingUpdate{Handle: handle, Content: content})
+	p.cardTimeline = append(p.cardTimeline, content)
 	p.mu.Unlock()
 	return nil
 }
@@ -2396,6 +2402,17 @@ func (p *cujStreamingPlatform) getPreviewUpdates() []cujStreamingUpdate {
 	out := make([]cujStreamingUpdate, len(p.previewUpdates))
 	copy(out, p.previewUpdates)
 	return out
+}
+
+// getLatestCardContent returns the most recent card JSON sent via either
+// SendPreviewStart or UpdateMessage, or "" when nothing was rendered.
+func (p *cujStreamingPlatform) getLatestCardContent() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if len(p.cardTimeline) == 0 {
+		return ""
+	}
+	return p.cardTimeline[len(p.cardTimeline)-1]
 }
 
 func newCUJStreamingEnv(t *testing.T) *cujEnv {

@@ -37,6 +37,7 @@ func TestTimelineFinalReply_SuppressesDuplicateSideChannelText(t *testing.T) {
 					if err := e.SendToSessionWithAttachments(key, sideText, nil, nil, nil, false); err != nil {
 						t.Fatal(err)
 					}
+					agentSession.events <- Event{Type: EventThinking, Content: "reading files"}
 					agentSession.events <- Event{Type: EventResult, Content: tc.finalText, InputTokens: tc.inputTokens, Done: true}
 					e.processInteractiveEvents(state, session, e.sessions, key, "m1", time.Now(), nil, nil, nil, 0)
 					got := p.getSent()
@@ -97,14 +98,17 @@ type timelineBlockingPlatform struct {
 func (p *timelineBlockingPlatform) blockRequest() {
 	p.once.Do(func() {
 		close(p.entered)
-		<-p.release
+		if p.blockStart {
+			<-p.release
+		}
 	})
 }
 
 func (p *timelineBlockingPlatform) SendPreviewStart(ctx context.Context, replyCtx any, content string) (any, error) {
-	if p.blockStart {
-		p.blockRequest()
-	}
+	// The first card request signals entered whether or not it blocks: the
+	// no-progress gate defers the initial card until a real entry arrives, so
+	// both blocking and immediate starts must become observable here.
+	p.blockRequest()
 	return p.cujStreamingPlatform.SendPreviewStart(ctx, replyCtx, content)
 }
 
@@ -123,6 +127,13 @@ func TestCUJ_STREAM2_TimelineNewDuringInitialCard(t *testing.T) {
 	release := sync.OnceFunc(func() { close(p.release) })
 	t.Cleanup(release)
 	a := &cujAgent{}
+	// Cards only render for turns with real progress; give both turns a
+	// thinking entry so the initial/new-card lifecycle stays observable.
+	a.setNextSessionEvents([]Event{
+		{Type: EventThinking, Content: "working on it"},
+		{Type: EventText, Content: "ok"},
+		{Type: EventResult, Content: "ok", Done: true},
+	}, 0)
 	e := NewEngine("test", a, []Platform{p}, t.TempDir()+"/sessions.json", LangEnglish)
 	t.Cleanup(e.cancel)
 	e.display.CardMode = "timeline"
@@ -146,6 +157,11 @@ func TestCUJ_STREAM2_TimelineNewDuringInitialCard(t *testing.T) {
 	if strings.Contains(strings.Join(p.getSent(), "\n"), "ok") {
 		t.Fatal("cancelled turn sent its final answer")
 	}
+	a.setNextSessionEvents([]Event{
+		{Type: EventThinking, Content: "round two"},
+		{Type: EventText, Content: "ok"},
+		{Type: EventResult, Content: "ok", Done: true},
+	}, 0)
 	sendTimelineCUJ(env, p, "continue after reset")
 	env.waitFor("next prompt answered", 2*time.Second, func() bool {
 		return strings.Contains(strings.Join(p.getSent(), "\n"), "ok") && !e.sessions.GetOrCreateActive("test:jack").Busy()
@@ -176,11 +192,8 @@ func TestTimelineStop_SlowCardRequestDoesNotBlockOtherSessions(t *testing.T) {
 				}
 				updated := make(chan struct{})
 				go func() {
-					if p.blockStart {
-						w.Start()
-					} else {
-						w.Handle(Event{Type: EventThinking, Content: "slow update"}, DisplayCfg{ThinkingMessages: true})
-					}
+					w.Start()
+					w.Handle(Event{Type: EventThinking, Content: "slow update"}, DisplayCfg{ThinkingMessages: true})
 					close(updated)
 				}()
 				select {

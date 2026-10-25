@@ -55,8 +55,10 @@ func TestTimelineFinalReply_ElapsedFooterRespectsDisplayFlags(t *testing.T) {
 				}
 				env.agent.setNextSessionEvents([]Event{{Type: EventResult, Content: answer, Done: true}}, 0)
 				sendTimelineCUJ(env, platform, "check footer")
+				// Quiet turns never render a card; completion is observable via
+				// the session leaving its busy state.
 				env.waitFor("turn completed", 2*time.Second, func() bool {
-					return len(p.getPreviewUpdates()) > 0 && !env.engine.sessions.GetOrCreateActive("test:jack").Busy()
+					return !env.engine.sessions.GetOrCreateActive("test:jack").Busy()
 				})
 				if tc.silent {
 					if sent := p.getSent(); len(sent) != 0 {

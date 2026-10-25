@@ -112,16 +112,8 @@ func TestTimelineFinalReply_NO_REPLYRemainsSilent(t *testing.T) {
 	env, p := newTimelineCUJEnv(t, "timeline", "rich")
 	env.agent.setNextSessionEvents([]Event{{Type: EventText, Content: "NO_"}, {Type: EventText, Content: "REPLY"}, {Type: EventResult, Content: "NO_REPLY", Done: true}}, 0)
 	sendTimelineCUJ(env, p, "silent")
-	env.waitFor("silent card completed", 2*time.Second, func() bool {
-		updates := p.getPreviewUpdates()
-		if len(updates) == 0 {
-			return false
-		}
-		payload, ok := ParseProgressCardPayload(updates[len(updates)-1].Content)
-		return ok && payload.State == ProgressCardStateCompleted
-	})
-	// Progress is sealed before result persistence and silent-reply handling.
-	// Wait for the whole turn so assertions and TempDir cleanup cannot race it.
+	// A quiet silent turn renders no card at all; completion is observable
+	// via the session leaving its busy state.
 	env.waitFor("silent turn finished", 2*time.Second, func() bool {
 		return !env.engine.sessions.GetOrCreateActive("test:jack").Busy()
 	})
@@ -146,6 +138,9 @@ func TestTimelineStop_GracefulCancelPreservesSession(t *testing.T) {
 	e.interactiveStates["test:jack"] = state
 	w := newTimelineProgressLocked(context.Background(), state, "test:jack", "codex", LangEnglish, nil, "timeline")
 	w.Start()
+	// A card only exists once real progress arrives; a quiet segment is
+	// never rendered, so give this stop target something to seal.
+	w.Handle(Event{Type: EventThinking, Content: "busy work"}, DisplayCfg{ThinkingMessages: true})
 	e.handleCardNav("act:/timeline-stop "+w.payload.TurnID, "test:jack")
 	if agentSession.cancels != 1 || !agentSession.Alive() || e.interactiveStates["test:jack"] != state {
 		t.Fatal("graceful cancellation destroyed session")
@@ -165,6 +160,9 @@ func TestTimelineStop_CancelFailureFallsBackToClose(t *testing.T) {
 	e.interactiveStates["test:jack"] = state
 	w := newTimelineProgressLocked(context.Background(), state, "test:jack", "codex", LangEnglish, nil, "timeline")
 	w.Start()
+	// A card only exists once real progress arrives; a quiet segment is
+	// never rendered, so give this stop target something to seal.
+	w.Handle(Event{Type: EventThinking, Content: "busy work"}, DisplayCfg{ThinkingMessages: true})
 	e.handleCardNav("act:/timeline-stop "+w.payload.TurnID, "test:jack")
 	if !state.isStopped() || lastTimelinePayload(t, p).State != ProgressCardStateInterrupted {
 		t.Fatal("failed graceful cancel did not stop the task")

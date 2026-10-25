@@ -25,16 +25,9 @@ func timelineTestState() (*interactiveState, *timelineTestPlatform) {
 
 func lastTimelinePayload(t *testing.T, p *timelineTestPlatform) *ProgressCardPayload {
 	t.Helper()
-	updates := p.getPreviewUpdates()
-	content := ""
-	if len(updates) > 0 {
-		content = updates[len(updates)-1].Content
-	} else {
-		opens := p.getPreviewOpens()
-		if len(opens) > 0 {
-			content = opens[len(opens)-1]
-		}
-	}
+	// The latest content may be an open (a segment whose first card just
+	// rendered) or an update; only the unified order reflects real timing.
+	content := p.getLatestCardContent()
 	payload, ok := ParseProgressCardPayload(content)
 	if !ok {
 		t.Fatalf("invalid timeline payload: %q", content)
@@ -87,15 +80,17 @@ func TestTimelineProgress_ThrottledUpdatesFlushAndStaySealed(t *testing.T) {
 	deadline := time.After(time.Second)
 	tick := time.NewTicker(5 * time.Millisecond)
 	defer tick.Stop()
-	for len(p.getPreviewUpdates()) == 0 {
+	// The first real entry opens the card (SendPreviewStart); throttle-driven
+	// later entries arrive as updates. Both channels carry card content.
+	for len(p.getPreviewOpens())+len(p.getPreviewUpdates()) == 0 {
 		select {
 		case <-deadline:
 			t.Fatal("throttled update never flushed")
 		case <-tick.C:
 		}
 	}
-	if !strings.Contains(p.getPreviewUpdates()[0].Content, "last thought in burst") {
-		t.Fatal("trailing flush lost progress")
+	if !strings.Contains(p.getPreviewOpens()[0], "last thought in burst") {
+		t.Fatal("first card lost progress")
 	}
 	w.Handle(Event{Type: EventThinking, Content: "before choice"}, DisplayCfg{ThinkingMessages: true})
 	w.Finalize(ProgressCardStatePaused)
@@ -119,10 +114,10 @@ func TestTimelineProgress_SealedCardsAndOldStopTokens(t *testing.T) {
 	w := newTimelineProgressLocked(context.Background(), state, "test:u", "codex", LangChinese, nil, "timeline")
 	w.Start()
 	w.Finalize(ProgressCardStatePaused)
-	count := len(p.getPreviewUpdates())
+	count := len(p.getPreviewUpdates()) + len(p.getPreviewOpens())
 	w.Finalize(ProgressCardStateCompleted)
 	w.Handle(Event{Type: EventThinking, Content: "late"}, DisplayCfg{ThinkingMessages: true})
-	if len(p.getPreviewUpdates()) != count || w.interrupt(w.payload.TurnID) {
+	if len(p.getPreviewUpdates())+len(p.getPreviewOpens()) != count || w.interrupt(w.payload.TurnID) {
 		t.Fatal("sealed card changed")
 	}
 	next := newTimelineProgressLocked(context.Background(), state, "test:u", "codex", LangChinese, nil, "timeline")
@@ -135,8 +130,8 @@ func TestTimelineProgress_SealedCardsAndOldStopTokens(t *testing.T) {
 	}
 	next.finishInterrupt()
 	next.Finalize(ProgressCardStateCompleted)
-	if lastTimelinePayload(t, p).State != ProgressCardStateInterrupted {
-		t.Fatal("completion overwrote interruption")
+	if total := len(p.getPreviewUpdates()) + len(p.getPreviewOpens()); total != count {
+		t.Fatalf("quiet segments rendered %d cards total, want %d", total, count)
 	}
 }
 
@@ -169,8 +164,9 @@ func TestTimelineProgress_ExistingModesRemainDisabled(t *testing.T) {
 }
 
 // Codex exec can omit some internal calls from its JSON stream. A quiet turn
-// must show elapsed time, then remove the running placeholder on completion.
-func TestTimelineProgress_NoEventStreamUpdatesThenClearsWaiting(t *testing.T) {
+// never renders a card at all: its final answer is a plain reply, so neither
+// the waiting notice nor any terminal state may create card updates.
+func TestTimelineProgress_NoEventStreamNeverShowsCard(t *testing.T) {
 	state, p := timelineTestState()
 	w := newTimelineProgressLocked(context.Background(), state, "test:u", "codex", LangChinese, nil, "timeline")
 	w.noticeInterval = 20 * time.Millisecond
@@ -179,25 +175,14 @@ func TestTimelineProgress_NoEventStreamUpdatesThenClearsWaiting(t *testing.T) {
 	w.mu.Lock()
 	w.startedAt = time.Now().Add(-time.Minute)
 	w.mu.Unlock()
-	deadline := time.After(time.Second)
-	for {
-		if strings.Contains(lastTimelinePayload(t, p).Items[0].Text, "已用时") {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("quiet turn did not show an elapsed-time notice")
-		case <-time.After(5 * time.Millisecond):
-		}
+	time.Sleep(60 * time.Millisecond)
+	if total := len(p.getPreviewOpens()) + len(p.getPreviewUpdates()); total != 0 {
+		t.Fatalf("quiet turn rendered %d card updates before completion, want none", total)
 	}
 	w.Finalize(ProgressCardStateCompleted)
-	completed := lastTimelinePayload(t, p)
-	if completed.State != ProgressCardStateCompleted || completed.Items[0].Text != NewI18n(LangChinese).T(MsgTimelineNoProgress) {
-		t.Fatalf("quiet completed card retained a running placeholder: %+v", completed)
-	}
-	count := len(p.getPreviewUpdates())
+	count := len(p.getPreviewUpdates()) + len(p.getPreviewOpens())
 	time.Sleep(50 * time.Millisecond)
-	if len(p.getPreviewUpdates()) != count {
+	if len(p.getPreviewUpdates())+len(p.getPreviewOpens()) != count {
 		t.Fatal("no-progress notice updated a sealed card")
 	}
 }
@@ -218,7 +203,9 @@ func TestTimelineProgress_RealEventCancelsNoProgressNotice(t *testing.T) {
 }
 
 // Stop and permission paths can seal a segment before any visible agent event.
-func TestTimelineProgress_NoEventsClearsPlaceholderForEveryTerminalPath(t *testing.T) {
+// Such segments must never render a card; the final plain reply is the only
+// message the user sees for a quiet turn.
+func TestTimelineProgress_NoEventsNeverSendsCardForEveryTerminalPath(t *testing.T) {
 	for _, state := range []ProgressCardState{ProgressCardStateCompleted, ProgressCardStatePaused, ProgressCardStateFailed, ProgressCardStateInterrupted, "stop", "button"} {
 		t.Run(string(state), func(t *testing.T) {
 			interactive, p := timelineTestState()
@@ -234,9 +221,8 @@ func TestTimelineProgress_NoEventsClearsPlaceholderForEveryTerminalPath(t *testi
 			default:
 				w.Finalize(state)
 			}
-			payload := lastTimelinePayload(t, p)
-			if len(payload.Items) != 1 || payload.Items[0].Text != NewI18n(LangChinese).T(MsgTimelineNoProgress) {
-				t.Fatalf("terminal path retained processing text: %+v", payload)
+			if total := len(p.getPreviewOpens()) + len(p.getPreviewUpdates()); total != 0 {
+				t.Fatalf("terminal path without events rendered %d cards, want none", total)
 			}
 			w.mu.Lock()
 			defer w.mu.Unlock()

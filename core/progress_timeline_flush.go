@@ -15,6 +15,22 @@ func (w *timelineProgress) flush(force bool) {
 	defer w.sendMu.Unlock()
 
 	w.mu.Lock()
+	// 无真实过程条目时不发卡：运行中只有内部占位行（尚未出现思考/工具），
+	// 发出后飞书会在头部下方渲染一条无法消除的空白，且无过程对话用
+	// Typing 表情加最终文本回复呈现更干净。终态同理——从未发过卡的
+	// segment 不补发只有占位内容的终态卡。
+	if w.waitingForProgressLocked() && w.handle == nil {
+		w.mu.Unlock()
+		return
+	}
+	if w.payload.State != ProgressCardStateRunning && w.handle == nil {
+		// waitingForProgressLocked only matches Running; a terminal segment
+		// with no real entries still has just the placeholder row.
+		if len(w.payload.Items) <= 1 {
+			w.mu.Unlock()
+			return
+		}
+	}
 	if !force && (w.payload.State != ProgressCardStateRunning || w.ctx.Err() != nil) {
 		w.mu.Unlock()
 		return
