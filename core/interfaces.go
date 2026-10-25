@@ -227,6 +227,19 @@ type TypingIndicator interface {
 	StartTyping(ctx context.Context, replyCtx any) (stop func())
 }
 
+// QuietAnswerCardVetoer lets a platform veto embedding a quiet turn's answer
+// in the terminal progress card. Feishu, for example, only fires mention
+// notifications for <at> tags inside text messages — never inside cards — so
+// an answer whose mentions resolve to real members must stay a plain text
+// reply or the mentioned users would never be notified. Platforms without
+// mention semantics simply do not implement this interface.
+type QuietAnswerCardVetoer interface {
+	// AllowQuietAnswerCard reports whether answer may be embedded in the
+	// terminal card for this reply context. Implementations must be safe to
+	// call on the final-send path.
+	AllowQuietAnswerCard(ctx context.Context, replyCtx any, answer string) bool
+}
+
 // TypingIndicatorDone is an optional interface for platforms that can show a
 // "done" reaction after processing completes. The engine calls AddDoneReaction
 // when the agent finishes a multi-round turn in quiet mode, so the user gets

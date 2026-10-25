@@ -6766,7 +6766,16 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				if statusFooter != "" {
 					answer += "\n\n<font color='grey'>" + statusFooter + "</font>"
 				}
-				if !timeline.HasRenderedCard() && !isSilent && strings.TrimSpace(answer) != "" && len(answer) <= 20000 {
+				embed := !timeline.HasRenderedCard() && !isSilent && strings.TrimSpace(answer) != "" && len(answer) <= 20000
+				if embed {
+					// The platform may veto card embedding when the plain
+					// message path carries semantics the card cannot express
+					// (e.g. mention notifications on Feishu).
+					if vetoer, ok := p.(QuietAnswerCardVetoer); ok && !vetoer.AllowQuietAnswerCard(e.ctx, replyCtx, answer) {
+						embed = false
+					}
+				}
+				if embed {
 					timeline.SetFinalAnswer(answer)
 				} else if !sendChunksWithStatusFooter(e.ctx, p, replyCtx, fullResponse, statusFooter, sendWorkspaceWithError) {
 					return

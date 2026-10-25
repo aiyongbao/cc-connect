@@ -1808,6 +1808,33 @@ func TestResolveMentions_LongestMatchFirst(t *testing.T) {
 	}
 }
 
+// Quiet turns embed their answer in the terminal card, but mentions inside
+// cards never notify anyone. The veto must therefore trigger only when the
+// answer would actually resolve a real member.
+func TestAllowQuietAnswerCard_VetoesOnlyResolvableMentions(t *testing.T) {
+	p := &Platform{platformName: "feishu", resolveMentions: true}
+	p.chatMemberCache.Store("oc_chat", &chatMemberEntry{
+		members:   map[string]string{"张三": "ou_zhangsan"},
+		fetchedAt: time.Now(),
+	})
+	rc := replyContext{chatID: "oc_chat"}
+
+	if !p.AllowQuietAnswerCard(context.Background(), rc, "没有提及的普通回复") {
+		t.Fatal("answer without mentions should embed")
+	}
+	if p.AllowQuietAnswerCard(context.Background(), rc, "巡检完成 @张三 请查看") {
+		t.Fatal("answer mentioning a real member must fall back to a text reply")
+	}
+	if !p.AllowQuietAnswerCard(context.Background(), rc, "邮箱 foo@example.com 不算提及") {
+		t.Fatal("unresolvable @text should not veto embedding")
+	}
+
+	p.resolveMentions = false
+	if !p.AllowQuietAnswerCard(context.Background(), rc, "@张三 关闭解析时不否决") {
+		t.Fatal("mention resolution disabled should embed")
+	}
+}
+
 // TestResolveMentions_MarkdownContent verifies that @name inside markdown
 // content (which would trigger MsgTypeInteractive) is still resolved to the
 // MsgTypeText at syntax (<at user_id="...">name</at>).
