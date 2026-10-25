@@ -66,33 +66,24 @@ func TestTimelineFinalReply_ElapsedFooterRespectsDisplayFlags(t *testing.T) {
 					}
 					return
 				}
-				// Quiet turns embed the answer (and its footer) in the terminal
-				// card, so assertions cover both plain messages and card content.
 				sent := strings.Join(p.getSent(), "\n")
-				cards := strings.Join(p.getPreviewOpens(), "\n")
-				for _, u := range p.getPreviewUpdates() {
-					cards += "\n" + u.Content
-				}
-				rendered := sent + "\n" + cards
-				if !strings.Contains(rendered, answer) {
-					t.Fatalf("final answer missing: %q", rendered)
+				if !strings.Contains(sent, answer) {
+					t.Fatalf("final answer missing: %q", sent)
 				}
 				wantElapsed := 0
 				if tc.enabled {
 					wantElapsed = 1
 				}
-				if got := strings.Count(rendered, "⏱ Elapsed "); got != wantElapsed {
-					t.Fatalf("elapsed line count = %d, footer enabled = %v: %q", got, tc.enabled, rendered)
+				if got := strings.Count(sent, "⏱ Elapsed "); got != wantElapsed {
+					t.Fatalf("elapsed line count = %d, footer enabled = %v: %q", got, tc.enabled, sent)
 				}
-				if strings.Contains(rendered, "timeline-footer-model") != (tc.enabled && tc.context) {
-					t.Fatalf("model visibility does not respect flags: %q", rendered)
+				if strings.Contains(sent, "timeline-footer-model") != (tc.enabled && tc.context) {
+					t.Fatalf("model visibility does not respect flags: %q", sent)
 				}
-				if strings.Contains(rendered, "timeline-footer-workspace") != (tc.enabled && tc.context && tc.dir) {
-					t.Fatalf("workdir visibility does not respect flags: %q", rendered)
+				if strings.Contains(sent, "timeline-footer-workspace") != (tc.enabled && tc.context && tc.dir) {
+					t.Fatalf("workdir visibility does not respect flags: %q", sent)
 				}
-				// Quiet turns always render inside the terminal card, so the
-				// structured footer sender is never involved for them.
-				if strings.Contains(rendered, "FOOTER:") {
+				if strings.Contains(sent, "FOOTER:") != (structured && tc.enabled) {
 					t.Fatalf("footer did not use the expected sender: %q", sent)
 				}
 			})

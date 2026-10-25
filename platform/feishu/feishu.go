@@ -2462,21 +2462,6 @@ func (p *Platform) resolveMentionsInContent(ctx context.Context, chatID, content
 	return result
 }
 
-// AllowQuietAnswerCard implements core.QuietAnswerCardVetoer. Mentions inside
-// cards never notify anyone on Feishu, so an answer that would resolve @name
-// to a real member must stay a plain text reply, where the MsgTypeText at
-// syntax fires the notification.
-func (p *Platform) AllowQuietAnswerCard(ctx context.Context, replyCtx any, answer string) bool {
-	rc, ok := replyCtx.(replyContext)
-	if !ok || rc.chatID == "" || !p.resolveMentions || !strings.Contains(answer, "@") {
-		return true
-	}
-	if p.resolveMentionsInContent(ctx, rc.chatID, answer) == answer {
-		return true // nothing resolved: safe to embed without losing a ping
-	}
-	return false
-}
-
 // chainMessage holds extracted data from one message in a reply chain.
 type chainMessage struct {
 	senderName string

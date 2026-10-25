@@ -6758,26 +6758,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						statusFooter = elapsed
 					}
 				}
-				// A quiet turn (no thinking or tool progress) never rendered a card:
-				// embed the answer in the terminal card so the user still gets the
-				// completed header and colour. Oversized answers fall back to the
-				// plain-message path because of the platform card size budget.
-				answer := fullResponse
-				if statusFooter != "" {
-					answer += "\n\n<font color='grey'>" + statusFooter + "</font>"
-				}
-				embed := !timeline.HasRenderedCard() && !isSilent && strings.TrimSpace(answer) != "" && len(answer) <= 20000
-				if embed {
-					// The platform may veto card embedding when the plain
-					// message path carries semantics the card cannot express
-					// (e.g. mention notifications on Feishu).
-					if vetoer, ok := p.(QuietAnswerCardVetoer); ok && !vetoer.AllowQuietAnswerCard(e.ctx, replyCtx, answer) {
-						embed = false
-					}
-				}
-				if embed {
-					timeline.SetFinalAnswer(answer)
-				} else if !sendChunksWithStatusFooter(e.ctx, p, replyCtx, fullResponse, statusFooter, sendWorkspaceWithError) {
+				if !sendChunksWithStatusFooter(e.ctx, p, replyCtx, fullResponse, statusFooter, sendWorkspaceWithError) {
 					return
 				}
 			} else if toolCount > 0 && segmentStart > 0 {

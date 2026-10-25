@@ -122,30 +122,6 @@ func TestTimelineFinalReply_NO_REPLYRemainsSilent(t *testing.T) {
 	}
 }
 
-// 平台否决内嵌时（如飞书 @提及需要文本消息才能触发提醒），安静回合的
-// 答复必须回退普通文本消息，且不渲染任何进度卡。
-type quietAnswerVetoPlatform struct {
-	*timelineTestPlatform
-}
-
-func (p *quietAnswerVetoPlatform) AllowQuietAnswerCard(_ context.Context, _ any, _ string) bool {
-	return false
-}
-
-func TestTimelineFinalReply_QuietAnswerVetoFallsBackToText(t *testing.T) {
-	env, p := newTimelineCUJEnv(t, "card", "timeline")
-	var platform Platform = &quietAnswerVetoPlatform{p}
-	env.agent.setNextSessionEvents([]Event{{Type: EventResult, Content: "plain vetoed answer", Done: true}}, 0)
-	sendTimelineCUJ(env, platform, "hello")
-	env.waitFor("text reply", 2*time.Second, func() bool {
-		rendered := strings.Join(p.getSent(), "\n") + strings.Join(p.getPreviewOpens(), "\n")
-		return strings.Contains(rendered, "plain vetoed answer")
-	})
-	if len(p.getPreviewOpens()) != 0 {
-		t.Fatalf("vetoed answer should not render a card, got %d", len(p.getPreviewOpens()))
-	}
-}
-
 type timelineCancelSession struct {
 	*cujAgentSession
 	cancels   int
@@ -203,10 +179,7 @@ func TestTimelineFinalReply_HiddenToolsDoNotReplaceFinalAnswerWithDraft(t *testi
 		{Type: EventResult, Content: "authoritative final answer", Done: true},
 	}, 0)
 	sendTimelineCUJ(env, p, "start")
-	env.waitFor("final answer", 2*time.Second, func() bool {
-		rendered := strings.Join(p.getSent(), "\n") + strings.Join(p.getPreviewOpens(), "\n")
-		return strings.Contains(rendered, "authoritative final answer")
-	})
+	env.waitFor("final answer", 2*time.Second, func() bool { return strings.Contains(strings.Join(p.getSent(), "\n"), "authoritative final answer") })
 	if strings.Contains(strings.Join(p.getSent(), "\n"), "draft") {
 		t.Fatal("draft replaced final answer")
 	}

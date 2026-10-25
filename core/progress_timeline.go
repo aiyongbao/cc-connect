@@ -92,30 +92,6 @@ func newTimelineProgressLocked(ctx context.Context, state *interactiveState, ses
 	return w
 }
 
-// SetFinalAnswer stores the reply of a quiet turn and flushes the terminal
-// card that embeds it. Only meaningful for segments that never rendered a
-// running card: the answer turns the otherwise-empty terminal card into the
-// reply message itself, so the user still gets the completed header.
-func (w *timelineProgress) SetFinalAnswer(answer string) {
-	if w == nil || answer == "" {
-		return
-	}
-	w.mu.Lock()
-	w.payload.FinalAnswer = answer
-	w.mu.Unlock()
-	w.flush(true)
-}
-
-// HasRenderedCard reports whether this segment ever rendered a card.
-func (w *timelineProgress) HasRenderedCard() bool {
-	if w == nil {
-		return false
-	}
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return w.handle != nil
-}
-
 // Start creates the initial receipt even before agent events.
 func (w *timelineProgress) Start() {
 	if w == nil {
