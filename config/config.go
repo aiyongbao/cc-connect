@@ -202,6 +202,7 @@ type DisplayConfig struct {
 	ToolMessages         *bool   `toml:"tool_messages"`          // whether tool progress messages are shown; default true
 	HistoryMaxLen        *int    `toml:"history_max_len"`        // max chars per /history entry; 0 = no truncation; default 1000
 	ShowContextIndicator *bool   `toml:"show_context_indicator"` // whether [ctx: ~N%] suffix is shown; default true
+	ShowWorkdirIndicator *bool   `toml:"show_workdir_indicator"` // whether the workspace directory line is shown; default true
 	ReplyFooter          *bool   `toml:"reply_footer"`           // whether Codex-like footer is shown; default true
 	HideAgentFooter      *bool   `toml:"hide_agent_footer"`      // strip agent-emitted model/token footer lines; default false
 }
@@ -892,7 +893,7 @@ func projectQuietEffective(cfg *Config, proj *ProjectConfig) bool {
 //  1. project-level [projects.display].<field> (highest precedence)
 //  2. global [display].<field>
 //  3. mode-derived default (compact/quiet → false, full → true)
-func EffectiveDisplay(cfg *Config, proj *ProjectConfig) (mode string, thinkingMessages, toolMessages bool, thinkingMaxLen, toolMaxLen int, showContextIndicator, replyFooter, hideAgentFooter bool) {
+func EffectiveDisplay(cfg *Config, proj *ProjectConfig) (mode string, thinkingMessages, toolMessages bool, thinkingMaxLen, toolMaxLen int, showContextIndicator, showWorkdirIndicator, replyFooter, hideAgentFooter bool) {
 	var projDisp *DisplayConfig
 	if proj != nil {
 		projDisp = proj.Display
@@ -988,6 +989,20 @@ func EffectiveDisplay(cfg *Config, proj *ProjectConfig) (mode string, thinkingMe
 		replyFooter = *cfg.Display.ReplyFooter
 	} else {
 		replyFooter = true
+	}
+
+	// ShowWorkdirIndicator follows the same precedence chain as
+	// ShowContextIndicator: proj > proj.Display > cfg.Display > default true.
+	// Before this, only the project-top-level field was wired (see main.go),
+	// so the global [display] value was silently ignored.
+	if proj != nil && proj.ShowWorkdirIndicator != nil {
+		showWorkdirIndicator = *proj.ShowWorkdirIndicator
+	} else if projDisp != nil && projDisp.ShowWorkdirIndicator != nil {
+		showWorkdirIndicator = *projDisp.ShowWorkdirIndicator
+	} else if cfg.Display.ShowWorkdirIndicator != nil {
+		showWorkdirIndicator = *cfg.Display.ShowWorkdirIndicator
+	} else {
+		showWorkdirIndicator = true
 	}
 
 	hideAgentFooter = pickBool(
