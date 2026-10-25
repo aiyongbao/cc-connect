@@ -1179,6 +1179,10 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 	case "item/completed":
 		var notif itemNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
+			// 异步提问只属于发起它的线程，子线程的问题不能泄漏到父会话
+			if notif.Item["delivery"] == "async" && notif.ThreadID != "" && notif.ThreadID != s.CurrentSessionID() {
+				return
+			}
 			s.handleItemCompleted(notif.Item)
 		}
 
@@ -1186,11 +1190,14 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 		var notif turnNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
 			if strings.EqualFold(strings.TrimSpace(notif.Turn.Status), "failed") || notif.Turn.Error != nil {
-				message := "codex app-server turn failed"
-				if notif.Turn.Error != nil && strings.TrimSpace(notif.Turn.Error.Message) != "" {
-					message += ": " + strings.TrimSpace(notif.Turn.Error.Message)
+				errMsg := ""
+				if notif.Turn.Error != nil {
+					errMsg = strings.TrimSpace(notif.Turn.Error.Message)
 				}
-				s.failTurn(errors.New(message))
+				if errMsg == "" {
+					errMsg = "turn failed (no details)"
+				}
+				s.failTurn(fmt.Errorf("%s", errMsg))
 			} else {
 				s.completeTurn()
 			}
@@ -1279,6 +1286,10 @@ func (s *appServerSession) handleItemCompleted(item map[string]any) {
 		}
 
 	case "agentMessage":
+		// 先检查是否为异步提问（delivery=async 且带 questions），命中则直接发出提问事件
+		if s.handleAsyncUserInput(item) {
+			return
+		}
 		text, _ := item["text"].(string)
 		if strings.TrimSpace(text) != "" {
 			s.stateMu.Lock()
