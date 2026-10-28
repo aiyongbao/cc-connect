@@ -7479,6 +7479,176 @@ func (s *controllableAgentSession) Close() error {
 	return s.closeErr
 }
 
+// pendingBackgroundTestSession models an agent that first emits an interim
+// result and only later finishes its background work.
+type pendingBackgroundTestSession struct {
+	*controllableAgentSession
+	pending atomic.Bool
+	checked chan struct{}
+	once    sync.Once
+}
+
+func (s *pendingBackgroundTestSession) HasPendingBackgroundTasks() bool {
+	s.once.Do(func() { close(s.checked) })
+	return s.pending.Load()
+}
+
+func TestProcessInteractiveEvents_WaitsForPendingBackgroundTasks(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	sessionKey := "test:background-task"
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	release := make(chan struct{})
+	agentSession := &pendingBackgroundTestSession{
+		controllableAgentSession: newControllableSession("background-session"),
+		checked:                  make(chan struct{}),
+	}
+	agentSession.pending.Store(true)
+	state := &interactiveState{
+		agentSession: agentSession,
+		platform:     p,
+		replyCtx:     "ctx-background",
+	}
+
+	producerDone := make(chan struct{})
+	go func() {
+		defer close(producerDone)
+		agentSession.events <- Event{Type: EventText, Content: "后台任务已启动"}
+		agentSession.events <- Event{Type: EventResult, Content: "阶段性回复", Done: true}
+		<-release
+		agentSession.pending.Store(false)
+		agentSession.events <- Event{Type: EventText, Content: "后台任务已完成"}
+		agentSession.events <- Event{Type: EventResult, Content: "最终回复", Done: true}
+	}()
+
+	processDone := make(chan struct{})
+	go func() {
+		e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m-background", time.Now(), nil, nil, state.replyCtx, 0)
+		close(processDone)
+	}()
+	select {
+	case <-agentSession.checked:
+	case <-time.After(time.Second):
+		t.Fatal("engine did not inspect the pending background task")
+	}
+	if sent := p.getSent(); len(sent) != 0 {
+		t.Fatalf("interim result was sent before background completion: %#v", sent)
+	}
+	select {
+	case <-processDone:
+		t.Fatal("turn completed before background task was released")
+	default:
+	}
+
+	close(release)
+	select {
+	case <-processDone:
+	case <-time.After(time.Second):
+		t.Fatal("turn did not complete after background task finished")
+	}
+	<-producerDone
+	sent := p.getSent()
+	if len(sent) != 1 || !strings.Contains(sent[0], "最终回复") {
+		t.Fatalf("final reply = %#v, want one final response after background completion", sent)
+	}
+}
+
+// A provisional result must not seal a timeline segment while Claude Code
+// still has background work. Otherwise the next background thinking/tool event
+// falls through to the platform's configured card writer and creates a second,
+// legacy progress card beside the timeline card.
+func TestProcessInteractiveEvents_PendingBackgroundKeepsTimelineSingleCard(t *testing.T) {
+	p := &timelineTestPlatform{style: "card"}
+	p.n = "feishu"
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, t.TempDir()+"/sessions.json", LangEnglish)
+	e.display.CardMode = "timeline"
+	// Keep the footer enabled to cover the reported configuration; the
+	// duplicate legacy card is caused by progress lifecycle ordering, not by
+	// footer rendering.
+	e.SetReplyFooterEnabled(true)
+	sessionKey := "feishu:timeline-background"
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	release := make(chan struct{})
+	agentSession := &pendingBackgroundTestSession{
+		controllableAgentSession: newControllableSession("timeline-background-session"),
+		checked:                  make(chan struct{}),
+	}
+	agentSession.pending.Store(true)
+	state := &interactiveState{
+		agentSession: agentSession,
+		platform:     p,
+		replyCtx:     "ctx-timeline-background",
+	}
+
+	producerDone := make(chan struct{})
+	go func() {
+		defer close(producerDone)
+		agentSession.events <- Event{Type: EventThinking, Content: "前台思考"}
+		agentSession.events <- Event{Type: EventResult, Content: "阶段性结果", Done: true}
+		<-release
+		agentSession.pending.Store(false)
+		agentSession.events <- Event{Type: EventThinking, Content: "后台任务完成后的思考"}
+		agentSession.events <- Event{Type: EventResult, Content: "最终结果", Done: true}
+	}()
+
+	processDone := make(chan struct{})
+	go func() {
+		e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m-timeline-background", time.Now(), nil, nil, state.replyCtx, 0)
+		close(processDone)
+	}()
+	select {
+	case <-agentSession.checked:
+	case <-time.After(time.Second):
+		t.Fatal("engine did not inspect the pending background task")
+	}
+	if got := len(p.getPreviewOpens()); got != 1 {
+		t.Fatalf("timeline card opens before background release = %d, want 1", got)
+	}
+	var first *ProgressCardPayload
+	deadline := time.Now().Add(time.Second)
+	for first == nil && time.Now().Before(deadline) {
+		candidate, ok := ParseProgressCardPayload(p.getLatestCardContent())
+		if ok && candidate.Background {
+			first = candidate
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if first == nil || first.Style != progressStyleTimeline || first.State != ProgressCardStateRunning {
+		t.Fatalf("provisional result sealed or changed timeline card: %+v", first)
+	}
+	select {
+	case <-processDone:
+		t.Fatal("turn completed before background task was released")
+	default:
+	}
+
+	close(release)
+	select {
+	case <-processDone:
+	case <-time.After(time.Second):
+		t.Fatal("turn did not complete after background task finished")
+	}
+	<-producerDone
+
+	if got := len(p.getPreviewOpens()); got != 1 {
+		t.Fatalf("progress card opens = %d, want one timeline card", got)
+	}
+	latest := lastTimelinePayload(t, p)
+	if latest.Style != progressStyleTimeline || latest.State != ProgressCardStateCompleted {
+		t.Fatalf("final timeline payload = %+v, want completed timeline", latest)
+	}
+	var sawBackgroundThought bool
+	for _, item := range latest.Items {
+		if item.Text == "后台任务完成后的思考" {
+			sawBackgroundThought = true
+		}
+	}
+	if !sawBackgroundThought {
+		t.Fatalf("background progress was not kept in timeline card: %+v", latest.Items)
+	}
+}
+
 func waitForInteractiveStateRemoved(t *testing.T, e *Engine, key string) {
 	t.Helper()
 	deadline := time.After(500 * time.Millisecond)

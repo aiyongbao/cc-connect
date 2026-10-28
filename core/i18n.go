@@ -704,6 +704,8 @@ const (
 
 var messages = map[MsgKey]map[Language]string{
 	MsgTimelineRunning:       {LangEnglish: "Running", LangChinese: "执行中", LangTraditionalChinese: "執行中", LangJapanese: "実行中", LangSpanish: "En curso"},
+	MsgTimelineBackground:    {LangEnglish: "Running in background", LangChinese: "后台执行中", LangTraditionalChinese: "後台執行中", LangJapanese: "バックグラウンドで実行中", LangSpanish: "Ejecutando en segundo plano"},
+	MsgTimelineBackgroundTag: {LangEnglish: "(background) ", LangChinese: "(后台) ", LangTraditionalChinese: "(後台) ", LangJapanese: "(バックグラウンド) ", LangSpanish: "(segundo plano) "},
 	MsgTimelineCompleted:     {LangEnglish: "Completed", LangChinese: "已完成", LangTraditionalChinese: "已完成", LangJapanese: "完了", LangSpanish: "Completado"},
 	MsgTimelinePaused:        {LangEnglish: "Waiting for your response", LangChinese: "等待你的选择", LangTraditionalChinese: "等待你的選擇", LangJapanese: "回答を待っています", LangSpanish: "Esperando tu respuesta"},
 	MsgTimelineInterrupted:   {LangEnglish: "Interrupted", LangChinese: "已被中断", LangTraditionalChinese: "已被中斷", LangJapanese: "中断されました", LangSpanish: "Interrumpido"},

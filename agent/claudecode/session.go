@@ -48,6 +48,18 @@ type claudeSession struct {
 	// carried a model field yet; callers should fall back to the Agent's
 	// configured model.
 	activeModel atomic.Value // stores string
+
+	// backgroundTasks tracks Claude Code tasks that have started and have not
+	// yet emitted their task notification. It is intentionally kept in the
+	// Claude adapter: other agents have different lifecycle protocols and must
+	// not inherit Claude-specific turn semantics.
+	backgroundTasksMu sync.RWMutex
+	backgroundTasks   map[string]struct{}
+	// backgroundTaskResults keeps background task run IDs until Claude has
+	// delivered the corresponding task-notification result. Claude can clear
+	// backgroundTasks before that result arrives, so the active-task snapshot
+	// alone is not enough to identify the final turn.
+	backgroundTaskResults map[string]struct{}
 	// lastModelSwitch remembers the last model_refusal_fallback that was
 	// reported, so a fallback the CLI announces twice (provisional, then final)
 	// reaches the user once.
@@ -114,6 +126,8 @@ type claudeSession struct {
 	// or when there is nothing to append.
 	promptFilePath string
 }
+
+const backgroundLaunchPrefix = "tool:"
 
 // StartupWarning implements core.StartupWarner. Returns a non-empty string
 // when the session was started under degraded conditions that the user should
@@ -520,18 +534,20 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 	}
 
 	cs := &claudeSession{
-		cmd:                 cmd,
-		stdin:               stdin,
-		events:              make(chan core.Event, 64),
-		workDir:             workDir,
-		ctx:                 sessionCtx,
-		cancel:              cancel,
-		done:                make(chan struct{}),
-		gracefulStopTimeout: defaultGracefulStopTimeout,
-		ccHooks:             newCCPermissionHookRunner(workDir),
-		startupWarning:      rootDowngradeWarning,
-		promptFilePath:      cleanupPromptPath,
-		ctxWindowOverride:   ctxWindowTokens,
+		cmd:                   cmd,
+		stdin:                 stdin,
+		events:                make(chan core.Event, 64),
+		workDir:               workDir,
+		ctx:                   sessionCtx,
+		cancel:                cancel,
+		done:                  make(chan struct{}),
+		gracefulStopTimeout:   defaultGracefulStopTimeout,
+		ccHooks:               newCCPermissionHookRunner(workDir),
+		startupWarning:        rootDowngradeWarning,
+		promptFilePath:        cleanupPromptPath,
+		ctxWindowOverride:     ctxWindowTokens,
+		backgroundTasks:       make(map[string]struct{}),
+		backgroundTaskResults: make(map[string]struct{}),
 	}
 	cs.setPermissionMode(mode)
 	cs.sessionID.Store(sessionID)
@@ -673,6 +689,133 @@ func (cs *claudeSession) handleReadLoopLine(line string) {
 	}
 }
 
+// HasPendingBackgroundTasks implements core.BackgroundTaskReporter. A Claude
+// foreground result is provisional while one of these tasks is still active.
+func (cs *claudeSession) HasPendingBackgroundTasks() bool {
+	cs.backgroundTasksMu.RLock()
+	defer cs.backgroundTasksMu.RUnlock()
+	return len(cs.backgroundTasks) > 0 || len(cs.backgroundTaskResults) > 0
+}
+
+// updateBackgroundTaskState consumes Claude Code's system task lifecycle
+// events. `background_tasks_changed` is the authoritative snapshot when it is
+// present; the start and notification events cover CLI versions that only
+// emit incremental updates.
+func (cs *claudeSession) updateBackgroundTaskState(raw map[string]any) {
+	subtype, _ := raw["subtype"].(string)
+	cs.backgroundTasksMu.Lock()
+	defer cs.backgroundTasksMu.Unlock()
+	if cs.backgroundTasks == nil {
+		cs.backgroundTasks = make(map[string]struct{})
+	}
+	if cs.backgroundTaskResults == nil {
+		cs.backgroundTaskResults = make(map[string]struct{})
+	}
+
+	switch subtype {
+	case "background_tasks_changed":
+		tasks, ok := raw["tasks"].([]any)
+		if !ok {
+			return
+		}
+		// Once Claude publishes its task snapshot, replace launch-only markers
+		// created from assistant tool input with authoritative run IDs.
+		for key := range cs.backgroundTaskResults {
+			if strings.HasPrefix(key, backgroundLaunchPrefix) {
+				delete(cs.backgroundTaskResults, key)
+			}
+		}
+		next := make(map[string]struct{}, len(tasks))
+		for _, item := range tasks {
+			task, ok := item.(map[string]any)
+			if !ok {
+				continue
+			}
+			if taskID, _ := task["task_id"].(string); taskID != "" {
+				next[taskID] = struct{}{}
+			}
+			if runID, _ := task["run_id"].(string); runID != "" {
+				cs.backgroundTaskResults[runID] = struct{}{}
+			}
+		}
+		cs.backgroundTasks = next
+	case "task_started":
+		// Claude uses the same lifecycle vocabulary for some foreground
+		// task plumbing. Only an explicitly backgrounded task may defer the
+		// enclosing turn; ordinary tool calls must retain normal semantics.
+		if backgrounded, ok := raw["is_backgrounded"].(bool); ok && !backgrounded {
+			return
+		}
+		if taskID, _ := raw["task_id"].(string); taskID != "" {
+			cs.backgroundTasks[taskID] = struct{}{}
+		}
+		if toolUseID, _ := raw["tool_use_id"].(string); toolUseID != "" {
+			delete(cs.backgroundTaskResults, backgroundLaunchPrefix+toolUseID)
+		}
+		if runID, _ := raw["run_id"].(string); runID != "" {
+			cs.backgroundTaskResults[runID] = struct{}{}
+		}
+	case "task_notification":
+		if taskID, _ := raw["task_id"].(string); taskID != "" {
+			delete(cs.backgroundTasks, taskID)
+		}
+		if runID, _ := raw["run_id"].(string); runID != "" {
+			// Keep the run ID until its task-notification result is consumed.
+			// The background_tasks_changed snapshot may already be empty by then.
+			cs.backgroundTaskResults[runID] = struct{}{}
+		}
+	}
+}
+
+// markBackgroundLaunch records a run_in_background tool before Claude's
+// system task events arrive. This closes the ordering gap where an assistant
+// result can precede background_tasks_changed/task_started on stream-json.
+func (cs *claudeSession) markBackgroundLaunch(toolUseID string) {
+	if toolUseID == "" {
+		return
+	}
+	cs.backgroundTasksMu.Lock()
+	defer cs.backgroundTasksMu.Unlock()
+	if cs.backgroundTaskResults == nil {
+		cs.backgroundTaskResults = make(map[string]struct{})
+	}
+	cs.backgroundTaskResults[backgroundLaunchPrefix+toolUseID] = struct{}{}
+}
+
+// taskNotificationRunID returns the background run ID carried by a result
+// generated while Claude is handling a task notification.
+func taskNotificationRunID(raw map[string]any) (string, bool) {
+	origin, _ := raw["origin"].(map[string]any)
+	if kind, _ := origin["kind"].(string); kind != "task-notification" {
+		return "", false
+	}
+	runID, _ := origin["runId"].(string)
+	return runID, true
+}
+
+// consumeTaskNotificationResult advances Claude's background-task barrier.
+// The result for the last known run ID is the only task-notification result
+// that may close the foreground turn.
+func (cs *claudeSession) consumeTaskNotificationResult(runID string) bool {
+	cs.backgroundTasksMu.Lock()
+	defer cs.backgroundTasksMu.Unlock()
+	if runID != "" {
+		delete(cs.backgroundTaskResults, runID)
+	}
+	return len(cs.backgroundTasks) > 0 || len(cs.backgroundTaskResults) > 0
+}
+
+// clearBackgroundTaskResultsAfterTerminalSnapshot handles Claude CLI modes
+// that emit a normal final result after background_tasks_changed becomes empty
+// instead of tagging that result as task-notification.
+func (cs *claudeSession) clearBackgroundTaskResultsAfterTerminalSnapshot() {
+	cs.backgroundTasksMu.Lock()
+	defer cs.backgroundTasksMu.Unlock()
+	if len(cs.backgroundTasks) == 0 {
+		clear(cs.backgroundTaskResults)
+	}
+}
+
 // isCompactionResult reports whether a `type:"result"` event is actually
 // a mid-turn compaction notification. Claude Code uses the value
 // `compact` in newer CLI versions and `compaction` in older ones; we
@@ -707,6 +850,7 @@ func resultSubtype(raw map[string]any) string {
 }
 
 func (cs *claudeSession) handleSystem(raw map[string]any) {
+	cs.updateBackgroundTaskState(raw)
 	if model, ok := raw["model"].(string); ok && model != "" {
 		cs.activeModel.Store(model)
 	}
@@ -1107,6 +1251,12 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 			if toolName == "AskUserQuestion" {
 				continue
 			}
+			if input, ok := item["input"].(map[string]any); ok {
+				if runInBackground, _ := input["run_in_background"].(bool); runInBackground {
+					toolUseID, _ := item["id"].(string)
+					cs.markBackgroundLaunch(toolUseID)
+				}
+			}
 			inputSummary := summarizeInput(toolName, item["input"])
 			evt := core.Event{Type: core.EventToolUse, ToolName: toolName, ToolInput: inputSummary}
 			select {
@@ -1223,6 +1373,9 @@ func (cs *claudeSession) handleResult(raw map[string]any) {
 	// user's turn with "(empty response)" and push the real reply into the
 	// unsolicited relay. It carries nothing to deliver, so drop it.
 	if isEmptyTaskNotificationResult(raw, content) {
+		if runID, ok := taskNotificationRunID(raw); ok {
+			cs.consumeTaskNotificationResult(runID)
+		}
 		slog.Info("claudeSession: dropping empty task-notification result (no model call)",
 			"session_id", cs.CurrentSessionID())
 		return
@@ -1312,11 +1465,25 @@ func (cs *claudeSession) handleResult(raw map[string]any) {
 	}
 	cs.usageMu.Unlock()
 
+	done := !isCompaction
+	if done {
+		if runID, ok := taskNotificationRunID(raw); ok {
+			// Each background task may produce its own task-notification
+			// result. Only the result for the last pending run closes the turn.
+			done = !cs.consumeTaskNotificationResult(runID)
+		} else {
+			// Some Claude CLI modes emit a normal final result after the
+			// background task snapshot is empty instead of tagging it as a
+			// task-notification result.
+			cs.clearBackgroundTaskResultsAfterTerminalSnapshot()
+		}
+	}
+
 	evt := core.Event{
 		Type:                     core.EventResult,
 		Content:                  content,
 		SessionID:                cs.CurrentSessionID(),
-		Done:                     !isCompaction,
+		Done:                     done,
 		InputTokens:              inputTokens,
 		OutputTokens:             outputTokens,
 		CacheCreationInputTokens: cacheCreationTokens,

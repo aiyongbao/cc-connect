@@ -68,6 +68,31 @@ func TestTimelineProgress_AdjacentEventsAndSimpleToolStatus(t *testing.T) {
 	}
 }
 
+func TestTimelineProgress_BackgroundMarksOnlyLaterEntries(t *testing.T) {
+	state, p := timelineTestState()
+	w := newTimelineProgressLocked(context.Background(), state, "test:u", "claudecode", LangChinese, nil, "timeline")
+	w.Start()
+	display := DisplayCfg{ThinkingMessages: true, ToolMessages: true}
+	w.Handle(Event{Type: EventThinking, Content: "foreground thought"}, display)
+	w.SetBackground(true)
+	w.Handle(Event{Type: EventThinking, Content: "background thought"}, display)
+	w.Handle(Event{Type: EventToolUse, ToolName: "Bash", ToolInput: "pwd"}, display)
+
+	payload := lastTimelinePayload(t, p)
+	if !payload.Background {
+		t.Fatal("timeline payload is not marked as background")
+	}
+	if len(payload.Items) != 3 {
+		t.Fatalf("items = %+v, want foreground plus two background entries", payload.Items)
+	}
+	if payload.Items[0].Background {
+		t.Fatal("foreground thought was marked as background")
+	}
+	if !payload.Items[1].Background || !payload.Items[2].Background {
+		t.Fatalf("background entries were not marked: %+v", payload.Items)
+	}
+}
+
 // A quiet period after a burst must still show its last event without waiting
 // for another tool or the final result to trigger a flush.
 func TestTimelineProgress_ThrottledUpdatesFlushAndStaySealed(t *testing.T) {

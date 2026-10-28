@@ -5834,9 +5834,6 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 				event.Content = "" // preserve session metadata without opening a text preview
 			}
-			if event.Type == EventResult && event.Done {
-				timeline.Finalize(ProgressCardStateCompleted)
-			}
 		}
 		switch event.Type {
 		case EventModelSwitch:
@@ -6390,6 +6387,25 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				)
 				continue
 			}
+			// Claude Code can emit a provisional result after the main model
+			// response while Agent/Bash tasks continue in the background. Keep
+			// the current turn (and its progress card) open until the adapter
+			// reports that those tasks have finished. Other agents do not opt in
+			// to BackgroundTaskReporter, so their normal EventResult path is
+			// unchanged.
+			if reporter, ok := agentSession.(BackgroundTaskReporter); ok && reporter.HasPendingBackgroundTasks() {
+				timeline.SetBackground(true)
+				slog.Debug("EventResult: waiting for agent background tasks",
+					"session", session.ID,
+					"agent", e.agent.Name(),
+				)
+				continue
+			}
+			// A terminal result is only final after any agent-reported background
+			// tasks have drained. Finalizing the timeline before that check leaves
+			// later background thoughts/tools to the platform's fallback progress
+			// writer, which can create a second legacy card in timeline mode.
+			timeline.Finalize(ProgressCardStateCompleted)
 			cp.Finalize(ProgressCardStateCompleted)
 			// Use agentSession.CurrentSessionID() instead of event.SessionID.
 			// event.SessionID may be empty in some cases, causing the agent_session_id

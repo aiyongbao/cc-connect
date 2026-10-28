@@ -119,8 +119,8 @@ func TestTimelineCard_GreyIconsForEveryThinkingAndSingleTool(t *testing.T) {
 	if len(elements) != 4 || timelineElementContent(elements[0]) != "first thought" || timelineElementContent(elements[1]) != "second thought" {
 		t.Fatalf("thoughts must retain separate icon rows: %+v", elements)
 	}
-	assertTimelineGreyIcon(t, elements[0], "efficiency_outlined")
-	assertTimelineGreyIcon(t, elements[1], "efficiency_outlined")
+	assertTimelineGreyIcon(t, elements[0], "mindmap_outlined")
+	assertTimelineGreyIcon(t, elements[1], "mindmap_outlined")
 	assertTimelineGreyIcon(t, elements[2]["header"].(map[string]any), "setting_outlined")
 	toolRow := elements[2]["elements"].([]any)[0].(map[string]any)
 	assertTimelineGreyIcon(t, toolRow, "setting_outlined")
@@ -142,7 +142,39 @@ func TestTimelineCard_GreyIconsForEveryThinkingAndSingleTool(t *testing.T) {
 		if timelineElementContent(row) != want {
 			t.Fatalf("completed thought %d lost its boundary: %+v", i, row)
 		}
-		assertTimelineGreyIcon(t, row, "efficiency_outlined")
+		assertTimelineGreyIcon(t, row, "mindmap_outlined")
+	}
+}
+
+func TestTimelineCard_BackgroundRunningUsesBackgroundLabelAndPrefix(t *testing.T) {
+	payload := &core.ProgressCardPayload{
+		Style: "timeline", Lang: "zh", State: core.ProgressCardStateRunning,
+		Background: true, TitleDots: 3,
+		Items: []core.ProgressCardEntry{
+			{Kind: core.ProgressEntryThinking, Text: "等待后台任务", Background: true},
+			{Kind: core.ProgressEntryToolUse, Tool: "Bash", Text: "pwd", Status: "running", Background: true},
+		},
+	}
+	var card struct {
+		Header struct {
+			Title struct {
+				Content string `json:"content"`
+			} `json:"title"`
+		} `json:"header"`
+	}
+	if err := json.Unmarshal([]byte(buildTimelineCard(payload)), &card); err != nil {
+		t.Fatal(err)
+	}
+	if card.Header.Title.Content != "后台执行中..." {
+		t.Fatalf("background title = %q, want 后台执行中...", card.Header.Title.Content)
+	}
+	elements := timelineCardElements(t, payload)
+	if timelineElementContent(elements[0]) != "(后台) 等待后台任务" {
+		t.Fatalf("background thinking = %q", timelineElementContent(elements[0]))
+	}
+	toolRows := elements[1]["elements"].([]any)
+	if len(toolRows) != 1 || timelineElementContent(toolRows[0].(map[string]any)) != "(后台) Bash · pwd · 执行中" {
+		t.Fatalf("background tool row = %+v", toolRows)
 	}
 }
 

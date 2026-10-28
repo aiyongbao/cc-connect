@@ -214,6 +214,111 @@ func TestIsEmptyTaskNotificationResult(t *testing.T) {
 	}
 }
 
+func TestClaudeSessionBackgroundTaskReporterTracksLifecycle(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cs := &claudeSession{
+		events:          make(chan core.Event, 8),
+		ctx:             ctx,
+		backgroundTasks: make(map[string]struct{}),
+	}
+
+	cs.handleReadLoopLine(`{"type":"system","subtype":"task_started","task_id":"foreground-task","is_backgrounded":false}`)
+	if cs.HasPendingBackgroundTasks() {
+		t.Fatal("foreground task plumbing must not defer the turn")
+	}
+	cs.handleReadLoopLine(`{"type":"system","subtype":"task_started","task_id":"task-1","is_backgrounded":true}`)
+	if !cs.HasPendingBackgroundTasks() {
+		t.Fatal("task_started should keep the foreground turn open")
+	}
+
+	// A completed patch is followed by task_notification. Keep the task until
+	// that notification so the provisional result cannot close the card early.
+	cs.handleReadLoopLine(`{"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"completed"}}`)
+	if !cs.HasPendingBackgroundTasks() {
+		t.Fatal("task_updated must not close the task before task_notification")
+	}
+	cs.handleReadLoopLine(`{"type":"system","subtype":"task_notification","task_id":"task-1","status":"completed"}`)
+	if cs.HasPendingBackgroundTasks() {
+		t.Fatal("task_notification should release the completed task")
+	}
+
+	cs.handleReadLoopLine(`{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"task-2","task_type":"local_bash"}]}`)
+	if !cs.HasPendingBackgroundTasks() {
+		t.Fatal("background_tasks_changed should restore the authoritative task snapshot")
+	}
+	cs.handleReadLoopLine(`{"type":"system","subtype":"background_tasks_changed","tasks":[]}`)
+	if cs.HasPendingBackgroundTasks() {
+		t.Fatal("empty background_tasks_changed should close the task set")
+	}
+}
+
+// Claude emits one task-notification result per background run. The task
+// snapshot is already empty by the time the last result is emitted, so the
+// run IDs must keep the first notification result provisional.
+func TestClaudeSessionTaskNotificationResultsKeepTurnOpen(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cs := &claudeSession{
+		events:                make(chan core.Event, 8),
+		ctx:                   ctx,
+		backgroundTasks:       make(map[string]struct{}),
+		backgroundTaskResults: make(map[string]struct{}),
+	}
+
+	cs.handleReadLoopLine(`{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"task-1","run_id":"run-1"},{"task_id":"task-2","run_id":"run-2"}]}`)
+	cs.handleReadLoopLine(`{"type":"system","subtype":"task_notification","task_id":"task-1","run_id":"run-1","status":"completed"}`)
+	cs.handleReadLoopLine(`{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"task-2","run_id":"run-2"}]}`)
+	cs.handleReadLoopLine(`{"type":"result","subtype":"success","origin":{"kind":"task-notification","runId":"run-1"},"num_turns":1,"result":"task 1 done"}`)
+
+	first := <-cs.events
+	if first.Type != core.EventResult || first.Done {
+		t.Fatalf("first task-notification result = %#v, want Done=false", first)
+	}
+
+	cs.handleReadLoopLine(`{"type":"system","subtype":"task_notification","task_id":"task-2","run_id":"run-2","status":"completed"}`)
+	cs.handleReadLoopLine(`{"type":"system","subtype":"background_tasks_changed","tasks":[]}`)
+	cs.handleReadLoopLine(`{"type":"result","subtype":"success","origin":{"kind":"task-notification","runId":"run-2"},"num_turns":1,"result":"all done"}`)
+
+	last := <-cs.events
+	if last.Type != core.EventResult || !last.Done {
+		t.Fatalf("last task-notification result = %#v, want Done=true", last)
+	}
+
+	// Print-style CLI runs may emit a normal result after the task snapshot is
+	// empty instead of tagging the result as task-notification.
+	cs.handleReadLoopLine(`{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"task-3","run_id":"run-3"}]}`)
+	cs.handleReadLoopLine(`{"type":"system","subtype":"task_notification","task_id":"task-3","run_id":"run-3","status":"completed"}`)
+	cs.handleReadLoopLine(`{"type":"system","subtype":"background_tasks_changed","tasks":[]}`)
+	cs.handleReadLoopLine(`{"type":"result","subtype":"success","num_turns":1,"result":"normal final"}`)
+	normal := <-cs.events
+	if normal.Type != core.EventResult || !normal.Done {
+		t.Fatalf("normal final result = %#v, want Done=true", normal)
+	}
+}
+
+func TestClaudeSessionBackgroundLaunchPrecedesSystemTaskEvents(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cs := &claudeSession{events: make(chan core.Event, 8), ctx: ctx}
+
+	cs.handleReadLoopLine(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-bg-1","name":"Bash","input":{"command":"sleep 5","run_in_background":true}}]}}`)
+	<-cs.events // consume the corresponding EventToolUse
+	if !cs.HasPendingBackgroundTasks() {
+		t.Fatal("run_in_background tool input should hold the turn before system events")
+	}
+	cs.handleReadLoopLine(`{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"task-1","run_id":"run-1"}]}`)
+	if !cs.HasPendingBackgroundTasks() {
+		t.Fatal("authoritative background task snapshot should keep the turn open")
+	}
+	cs.handleReadLoopLine(`{"type":"system","subtype":"task_notification","task_id":"task-1","run_id":"run-1","status":"completed"}`)
+	cs.handleReadLoopLine(`{"type":"system","subtype":"background_tasks_changed","tasks":[]}`)
+	cs.handleReadLoopLine(`{"type":"result","subtype":"success","origin":{"kind":"task-notification","runId":"run-1"},"num_turns":1,"result":"done"}`)
+	if evt := <-cs.events; evt.Type != core.EventResult || !evt.Done {
+		t.Fatalf("final task result = %#v, want Done=true", evt)
+	}
+}
+
 // TestIsCompactionResult covers both accepted subtype spellings and the
 // negative case (regular result with no subtype).
 func TestIsCompactionResult(t *testing.T) {

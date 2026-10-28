@@ -20,7 +20,9 @@ type timelineSegment struct {
 
 // Native outline icons follow Feishu's light/dark themes without colorful emoji.
 const (
-	timelineThinkingIcon = "efficiency_outlined"
+	// Reuse the reasoning icon from the established rich/card renderers so
+	// changing to timeline does not change the meaning of a thought row.
+	timelineThinkingIcon = reasoningToolIcon
 	timelineToolIcon     = "setting_outlined"
 )
 
@@ -30,6 +32,9 @@ const (
 func buildTimelineCard(payload *core.ProgressCardPayload) string {
 	i18n := core.NewI18n(core.Language(payload.Lang))
 	titleKey, color := core.MsgTimelineRunning, "blue"
+	if payload.Background {
+		titleKey = core.MsgTimelineBackground
+	}
 	switch payload.State {
 	case core.ProgressCardStateCompleted:
 		titleKey, color = core.MsgTimelineCompleted, "green"
@@ -138,11 +143,11 @@ func timelineIsTerminalWithoutProgress(payload *core.ProgressCardPayload, i18n *
 		payload.Items[0].Text == i18n.T(core.MsgTimelineNoProgress)
 }
 
-// timelineHeaderTitle animates the translated running label only on card writes.
+// timelineHeaderTitle animates translated running labels only on card writes.
 // Waiting and terminal labels retain their existing translations without dots.
 func timelineHeaderTitle(i18n *core.I18n, titleKey core.MsgKey, dots int) map[string]any {
 	title := i18n.T(titleKey)
-	if titleKey == core.MsgTimelineRunning {
+	if titleKey == core.MsgTimelineRunning || titleKey == core.MsgTimelineBackground {
 		if dots < 1 || dots > 3 {
 			dots = 1
 		}
@@ -202,7 +207,11 @@ func timelineCardSegments(payload *core.ProgressCardPayload, i18n *core.I18n) []
 		}
 		switch kind {
 		case core.ProgressEntryThinking:
-			group = append(group, item.Text)
+			text := item.Text
+			if item.Background {
+				text = i18n.T(core.MsgTimelineBackgroundTag) + text
+			}
+			group = append(group, text)
 		case core.ProgressEntryToolUse:
 			status := core.MsgTimelineToolRunning
 			if item.Status == "completed" {
@@ -216,6 +225,9 @@ func timelineCardSegments(payload *core.ProgressCardPayload, i18n *core.I18n) []
 				name = "Tool"
 			}
 			line := name
+			if item.Background {
+				line = i18n.T(core.MsgTimelineBackgroundTag) + line
+			}
 			if item.Text != "" && item.Text != name {
 				line += " · " + strings.ReplaceAll(item.Text, "\n", " ")
 			}

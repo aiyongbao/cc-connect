@@ -49,12 +49,13 @@ const (
 )
 
 type ProgressCardEntry struct {
-	Kind     ProgressCardEntryKind `json:"kind"`
-	Text     string                `json:"text"`
-	Tool     string                `json:"tool,omitempty"`
-	Status   string                `json:"status,omitempty"`
-	ExitCode *int                  `json:"exit_code,omitempty"`
-	Success  *bool                 `json:"success,omitempty"`
+	Kind       ProgressCardEntryKind `json:"kind"`
+	Text       string                `json:"text"`
+	Tool       string                `json:"tool,omitempty"`
+	Status     string                `json:"status,omitempty"`
+	ExitCode   *int                  `json:"exit_code,omitempty"`
+	Success    *bool                 `json:"success,omitempty"`
+	Background bool                  `json:"background,omitempty"`
 }
 
 // ProgressCardPayload carries structured progress entries for platforms that
@@ -69,8 +70,9 @@ type ProgressCardPayload struct {
 	Agent      string              `json:"agent,omitempty"`
 	Lang       string              `json:"lang,omitempty"`
 	State      ProgressCardState   `json:"state,omitempty"`
-	Entries    []string            `json:"entries,omitempty"` // legacy fallback
-	Items      []ProgressCardEntry `json:"items,omitempty"`   // ordered typed events
+	Background bool                `json:"background,omitempty"` // timeline is waiting on background work.
+	Entries    []string            `json:"entries,omitempty"`    // legacy fallback
+	Items      []ProgressCardEntry `json:"items,omitempty"`      // ordered typed events
 	Truncated  bool                `json:"truncated"`
 
 	// Timeline thinking updates + tool calls before merging/trimming;
@@ -115,12 +117,13 @@ func BuildProgressCardPayloadV2(items []ProgressCardEntry, truncated bool, agent
 			kind = ProgressEntryInfo
 		}
 		cleaned = append(cleaned, ProgressCardEntry{
-			Kind:     kind,
-			Text:     text,
-			Tool:     strings.TrimSpace(item.Tool),
-			Status:   strings.TrimSpace(item.Status),
-			ExitCode: item.ExitCode,
-			Success:  item.Success,
+			Kind:       kind,
+			Text:       text,
+			Tool:       strings.TrimSpace(item.Tool),
+			Status:     strings.TrimSpace(item.Status),
+			ExitCode:   item.ExitCode,
+			Success:    item.Success,
+			Background: item.Background,
 		})
 	}
 	if len(cleaned) == 0 {

@@ -17,6 +17,8 @@ const (
 
 	// Timeline labels are shared with platform renderers through the i18n API.
 	MsgTimelineRunning       MsgKey = "timeline_running"
+	MsgTimelineBackground    MsgKey = "timeline_background"
+	MsgTimelineBackgroundTag MsgKey = "timeline_background_tag"
 	MsgTimelineCompleted     MsgKey = "timeline_completed"
 	MsgTimelinePaused        MsgKey = "timeline_paused"
 	MsgTimelineInterrupted   MsgKey = "timeline_interrupted"
@@ -113,6 +115,23 @@ func (w *timelineProgress) Start() {
 	w.mu.Unlock()
 }
 
+// SetBackground marks a running timeline segment as waiting for agent-managed
+// background work. It only changes the timeline payload; other progress
+// writers do not call this method and keep their established rendering.
+func (w *timelineProgress) SetBackground(background bool) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	if w.payload.State != ProgressCardStateRunning || w.payload.Background == background {
+		w.mu.Unlock()
+		return
+	}
+	w.payload.Background = background
+	w.mu.Unlock()
+	w.flush(false)
+}
+
 func timelineStopSignal(w *timelineProgress) <-chan struct{} {
 	if w == nil {
 		return nil
@@ -144,7 +163,7 @@ func (w *timelineProgress) Handle(event Event, display DisplayCfg) bool {
 		if !display.ThinkingMessages || isEllipsisOnly(event.Content) {
 			return true
 		}
-		entry = ProgressCardEntry{Kind: ProgressEntryThinking, Text: truncateIf(event.Content, display.ThinkingMaxLen)}
+		entry = ProgressCardEntry{Kind: ProgressEntryThinking, Text: truncateIf(event.Content, display.ThinkingMaxLen), Background: w.payload.Background}
 		if w.transform != nil {
 			entry.Text = w.transform(entry.Text)
 		}
@@ -152,7 +171,7 @@ func (w *timelineProgress) Handle(event Event, display DisplayCfg) bool {
 		if !display.ToolMessages {
 			return true
 		}
-		entry = ProgressCardEntry{Kind: ProgressEntryToolUse, Tool: timelineToolName(event), Text: timelineToolSummary(event.ToolInput), Status: "running"}
+		entry = ProgressCardEntry{Kind: ProgressEntryToolUse, Tool: timelineToolName(event), Text: timelineToolSummary(event.ToolInput), Status: "running", Background: w.payload.Background}
 	case EventToolResult:
 		if !display.ToolMessages {
 			return true
