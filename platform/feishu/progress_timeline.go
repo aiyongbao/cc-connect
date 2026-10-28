@@ -16,6 +16,7 @@ func (p *Platform) SupportsTimelineProgress() bool { return p.useInteractiveCard
 type timelineSegment struct {
 	kind  core.ProgressCardEntryKind
 	texts []string
+	muted bool // muted rows use the same notation/grey style as rich Reasoning hints.
 }
 
 // Native outline icons follow Feishu's light/dark themes without colorful emoji.
@@ -64,7 +65,7 @@ func buildTimelineCard(payload *core.ProgressCardPayload) string {
 	for _, segment := range segments {
 		rows := make([]map[string]any, 0, len(segment.texts))
 		for _, content := range texts[offset : offset+len(segment.texts)] {
-			rows = append(rows, timelineEntryElement(content, segment.kind))
+			rows = append(rows, timelineEntryElement(content, segment.kind, segment.muted))
 		}
 		offset += len(segment.texts)
 		if segment.kind == core.ProgressEntryToolUse {
@@ -179,7 +180,12 @@ func timelineHeaderClockTags(updatedAt string) []map[string]any {
 func timelineCardSegments(payload *core.ProgressCardPayload, i18n *core.I18n) []timelineSegment {
 	segments := make([]timelineSegment, 0, len(payload.Items)+1)
 	if payload.Truncated {
-		segments = append(segments, timelineSegment{texts: []string{i18n.T(core.MsgTimelineTruncated)}})
+		text := i18n.T(core.MsgTimelineTruncated)
+		hidden := payload.TotalEntries - len(payload.Items)
+		if hidden > 0 {
+			text = i18n.Tf(core.MsgTimelineEarlierHidden, hidden)
+		}
+		segments = append(segments, timelineSegment{texts: []string{text}, muted: true})
 	}
 	var groupKind core.ProgressCardEntryKind
 	var group []string
@@ -243,9 +249,9 @@ func timelineCardSegments(payload *core.ProgressCardPayload, i18n *core.I18n) []
 // timelineEntryElement matches rich Reasoning rows: small grey plain text with
 // a stable outline icon. Plain text also keeps tool arguments from introducing
 // bold text or other formatting that would overpower the progress content.
-func timelineEntryElement(content string, kind core.ProgressCardEntryKind) map[string]any {
+func timelineEntryElement(content string, kind core.ProgressCardEntryKind, muted bool) map[string]any {
 	element := map[string]any{"tag": "markdown", "content": content}
-	if kind == core.ProgressEntryThinking || kind == core.ProgressEntryToolUse {
+	if muted || kind == core.ProgressEntryThinking || kind == core.ProgressEntryToolUse {
 		element = map[string]any{
 			"tag": "div",
 			"text": map[string]any{

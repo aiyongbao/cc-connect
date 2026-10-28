@@ -25,6 +25,7 @@ const (
 	MsgTimelineFailed        MsgKey = "timeline_failed"
 	MsgTimelineStop          MsgKey = "timeline_stop"
 	MsgTimelineTruncated     MsgKey = "timeline_truncated"
+	MsgTimelineEarlierHidden MsgKey = "timeline_earlier_hidden"
 	MsgTimelineToolGroup     MsgKey = "timeline_tool_group"
 	MsgTimelineToolRunning   MsgKey = "timeline_tool_running"
 	MsgTimelineToolCompleted MsgKey = "timeline_tool_completed"

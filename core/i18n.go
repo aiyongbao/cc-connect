@@ -712,6 +712,8 @@ var messages = map[MsgKey]map[Language]string{
 	MsgTimelineFailed:        {LangEnglish: "Failed", LangChinese: "执行失败", LangTraditionalChinese: "執行失敗", LangJapanese: "失敗", LangSpanish: "Fallido"},
 	MsgTimelineStop:          {LangEnglish: "⏹ Stop", LangChinese: "⏹ 停止", LangTraditionalChinese: "⏹ 停止", LangJapanese: "⏹ 停止", LangSpanish: "⏹ Detener"},
 	MsgTimelineTruncated:     {LangEnglish: "Showing latest updates only.", LangChinese: "仅显示最近更新。", LangTraditionalChinese: "僅顯示最近更新。", LangJapanese: "最新の更新のみ表示しています。", LangSpanish: "Solo se muestran las últimas actualizaciones."},
+	// Keep the truncation hint short and consistent with the rich-card renderer.
+	MsgTimelineEarlierHidden: {LangEnglish: "... %d earlier steps hidden", LangChinese: "... %d earlier steps hidden", LangTraditionalChinese: "... %d earlier steps hidden", LangJapanese: "... %d earlier steps hidden", LangSpanish: "... %d earlier steps hidden"},
 	MsgTimelineToolGroup:     {LangEnglish: "%d tool calls", LangChinese: "%d 个工具调用", LangTraditionalChinese: "%d 個工具調用", LangJapanese: "ツール呼び出し %d 件", LangSpanish: "%d llamadas a herramientas"},
 	MsgTimelineToolRunning:   {LangEnglish: "Running", LangChinese: "执行中", LangTraditionalChinese: "執行中", LangJapanese: "実行中", LangSpanish: "En curso"},
 	MsgTimelineToolCompleted: {LangEnglish: "Completed", LangChinese: "已完成", LangTraditionalChinese: "已完成", LangJapanese: "完了", LangSpanish: "Completado"},

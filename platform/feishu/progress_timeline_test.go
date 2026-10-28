@@ -358,3 +358,25 @@ func TestTimelineCard_CompletedTitleUsesCumulativeCount(t *testing.T) {
 		}
 	}
 }
+
+func TestTimelineCard_TruncatedHintUsesRichStyleAndCount(t *testing.T) {
+	payload := &core.ProgressCardPayload{
+		Style: "timeline", Lang: "zh", State: core.ProgressCardStateRunning,
+		TotalEntries: 27, Truncated: true,
+		Items: []core.ProgressCardEntry{{Kind: core.ProgressEntryThinking, Text: "latest thought"}},
+	}
+	elements := timelineCardElements(t, payload)
+	if len(elements) == 0 || elements[0]["tag"] != "div" {
+		t.Fatalf("truncated hint should be the first muted div: %+v", elements)
+	}
+	text, ok := elements[0]["text"].(map[string]any)
+	if !ok {
+		t.Fatalf("truncated hint has no text block: %+v", elements[0])
+	}
+	if text["content"] != "... 26 earlier steps hidden" || text["text_size"] != "notation" || text["text_color"] != "grey" {
+		t.Fatalf("truncated hint style/content = %+v", text)
+	}
+	if _, hasIcon := elements[0]["icon"]; hasIcon {
+		t.Fatalf("truncated hint should not add a reasoning icon: %+v", elements[0])
+	}
+}
