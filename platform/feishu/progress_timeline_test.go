@@ -31,7 +31,7 @@ func TestTimelineCard_OrderedGroupsWithoutStopButton(t *testing.T) {
 	}
 	toolGroup := elements[1]
 	toolRows := toolGroup["elements"].([]any)
-	if elements[0]["content"] != "first thought" || !strings.Contains(toolRows[0].(map[string]any)["content"].(string), "**Bash**") || !strings.Contains(toolRows[1].(map[string]any)["content"].(string), "**Read**") || elements[2]["content"] != "last thought" {
+	if timelineElementContent(elements[0]) != "first thought" || !strings.Contains(timelineElementContent(toolRows[0].(map[string]any)), "Bash") || !strings.Contains(timelineElementContent(toolRows[1].(map[string]any)), "Read") || timelineElementContent(elements[2]) != "last thought" {
 		t.Fatalf("incorrect order/grouping: %s", raw)
 	}
 	if toolGroup["tag"] != "collapsible_panel" || toolGroup["expanded"] != false || strings.Count(raw, "collapsible_panel") != 1 {
@@ -68,6 +68,41 @@ func TestTimelineCard_InterruptedUsesWarningColor(t *testing.T) {
 	}
 }
 
+// Running titles animate using the supplied write phase. All other states
+// keep the existing Chinese translations even if a stale phase is supplied.
+func TestTimelineCard_TitleDotsAndTranslatedStates(t *testing.T) {
+	for _, tc := range []struct {
+		state core.ProgressCardState
+		dots  int
+		want  string
+	}{
+		{core.ProgressCardStateRunning, 1, "执行中."},
+		{core.ProgressCardStateRunning, 2, "执行中.."},
+		{core.ProgressCardStateRunning, 3, "执行中..."},
+		{core.ProgressCardStateRunning, 0, "执行中."},
+		{core.ProgressCardStatePaused, 3, "等待你的选择"},
+		{core.ProgressCardStateCompleted, 3, "已完成"},
+		{core.ProgressCardStateInterrupted, 3, "已被中断"},
+		{core.ProgressCardStateFailed, 3, "执行失败"},
+	} {
+		payload := &core.ProgressCardPayload{
+			Style: "timeline", Lang: "zh", State: tc.state, TitleDots: tc.dots,
+			Items: []core.ProgressCardEntry{{Kind: core.ProgressEntryThinking, Text: "检查中"}},
+		}
+		var card struct {
+			Header struct {
+				Title struct{ Content string }
+			}
+		}
+		if err := json.Unmarshal([]byte(buildTimelineCard(payload)), &card); err != nil {
+			t.Fatal(err)
+		}
+		if card.Header.Title.Content != tc.want {
+			t.Fatalf("%s/%d title = %q, want %q", tc.state, tc.dots, card.Header.Title.Content, tc.want)
+		}
+	}
+}
+
 func TestTimelineCard_CompletedCollapsesWholeProcess(t *testing.T) {
 	payload := &core.ProgressCardPayload{
 		Style: "timeline", Lang: "zh", State: core.ProgressCardStateCompleted,
@@ -78,7 +113,7 @@ func TestTimelineCard_CompletedCollapsesWholeProcess(t *testing.T) {
 		},
 	}
 	elements := timelineCardElements(t, payload)
-	if len(elements) != 1 || elements[0]["tag"] != "collapsible_panel" || elements[0]["expanded"] != false {
+	if len(elements) != 3 || elements[0]["tag"] != "collapsible_panel" || elements[0]["expanded"] != false {
 		t.Fatalf("completed process should be collapsed, got %+v", elements)
 	}
 	title := elements[0]["header"].(map[string]any)["title"].(map[string]any)["content"]
@@ -141,8 +176,8 @@ func TestTimelineCard_ShowsOneUpdateTime(t *testing.T) {
 	}
 }
 
-// All progress groups share the existing per-card table budget. Invalid images
-// must not keep subsequent updates and terminal cards from being accepted.
+// Progress text retains its existing sanitizer even when rendered as plain
+// small text. Invalid images and over-budget tables must remain normalized.
 func TestTimelineCard_SanitizesMarkdownWithSharedTableBudget(t *testing.T) {
 	for _, grouped := range []bool{false, true} {
 		for _, state := range []core.ProgressCardState{core.ProgressCardStateRunning, core.ProgressCardStateCompleted, core.ProgressCardStatePaused, core.ProgressCardStateInterrupted, core.ProgressCardStateFailed} {
@@ -157,7 +192,7 @@ func TestTimelineCard_SanitizesMarkdownWithSharedTableBudget(t *testing.T) {
 				}
 				items = append(items, core.ProgressCardEntry{Kind: core.ProgressEntryThinking, Text: "Images\n\n![remote](https://example.com/image.png)\n\n![local](/tmp/image.png)\n\n![ok](img_v3_valid)"})
 				payload := &core.ProgressCardPayload{Style: "timeline", Lang: "en", State: state, Items: items}
-				segments := collectCardMarkdownContents(t, buildTimelineCard(payload))
+				segments := collectTimelineTextContents(t, payload)
 				count := 0
 				for _, content := range segments {
 					count += len(findMarkdownTablesOutsideCodeBlocks(content))
@@ -177,8 +212,58 @@ func TestTimelineCard_SanitizesMarkdownWithSharedTableBudget(t *testing.T) {
 	}
 }
 
+// Progress rows match rich Reasoning font/colour, both while running and
+// inside completed collapsed history. Plain text must not expose generated
+// markdown wrappers around tool names or statuses.
+func TestTimelineCard_ThoughtAndToolTextMatchRichReasoningStyle(t *testing.T) {
+	reference := richStepElement(core.ToolStep{Kind: core.ToolStepKindThinking, Summary: "reference"})["text"].(map[string]any)
+	for _, state := range []core.ProgressCardState{core.ProgressCardStateRunning, core.ProgressCardStateCompleted} {
+		payload := &core.ProgressCardPayload{
+			Style: "timeline", Lang: "zh", State: state,
+			Items: []core.ProgressCardEntry{
+				{Kind: core.ProgressEntryThinking, Text: "检查中"},
+				{Kind: core.ProgressEntryToolUse, Tool: "Read", Text: "/tmp/file", Status: "completed"},
+			},
+		}
+		thought, tool := false, false
+		var visit func([]map[string]any)
+		visit = func(elements []map[string]any) {
+			for _, element := range elements {
+				if icon, ok := element["icon"].(map[string]any); ok {
+					token := icon["token"]
+					if element["tag"] == "div" && (token == timelineThinkingIcon || token == timelineToolIcon) {
+						text := element["text"].(map[string]any)
+						for _, key := range []string{"tag", "text_size", "text_color"} {
+							if text[key] != reference[key] {
+								t.Fatalf("%s %v differs from Reasoning style: %+v", state, key, text)
+							}
+						}
+						thought = thought || token == timelineThinkingIcon
+						tool = tool || token == timelineToolIcon
+						content := text["content"].(string)
+						if strings.Contains(content, "<font") || strings.Contains(content, "**Read**") {
+							t.Fatalf("plain text row exposes generated formatting: %s", content)
+						}
+					}
+				}
+				if children, ok := element["elements"].([]any); ok {
+					nested := make([]map[string]any, 0, len(children))
+					for _, child := range children {
+						nested = append(nested, child.(map[string]any))
+					}
+					visit(nested)
+				}
+			}
+		}
+		visit(timelineCardElements(t, payload))
+		if !thought || !tool {
+			t.Fatalf("%s card lost the thought/tool text rows", state)
+		}
+	}
+}
+
 // 回归：从未产生思考或工具进度的对话，终态卡片不应再渲染只有占位文本的
-// “执行过程”面板；body 留空，由头部的终态标题表达结果。
+// “执行过程”面板；完成时只显示引导用户查看下一条答复的提示。
 func TestTimelineCard_TerminalWithoutProgressHidesPlaceholder(t *testing.T) {
 	placeholder := core.NewI18n(core.LangChinese).T(core.MsgTimelineNoProgress)
 	for _, state := range []core.ProgressCardState{core.ProgressCardStateCompleted, core.ProgressCardStateInterrupted, core.ProgressCardStateFailed} {
@@ -186,7 +271,14 @@ func TestTimelineCard_TerminalWithoutProgressHidesPlaceholder(t *testing.T) {
 			Style: "timeline", Lang: "zh", State: state,
 			Items: []core.ProgressCardEntry{{Kind: core.ProgressEntryInfo, Text: placeholder}},
 		}
-		if elements := timelineCardElements(t, payload); len(elements) != 0 {
+		elements := timelineCardElements(t, payload)
+		if state == core.ProgressCardStateCompleted {
+			if len(elements) != 1 || elements[0]["tag"] != "div" {
+				t.Fatalf("empty completed card should contain only the notice, got %+v", elements)
+			}
+			continue
+		}
+		if len(elements) != 0 {
 			t.Fatalf("%s card should hide the placeholder body, got %+v", state, elements)
 		}
 		// 飞书对空 body 仍渲染默认内边距，且 schema 2.0 强制要求
@@ -203,7 +295,66 @@ func TestTimelineCard_TerminalWithoutProgressHidesPlaceholder(t *testing.T) {
 		Items: []core.ProgressCardEntry{{Kind: core.ProgressEntryThinking, Text: "检查中"}},
 	}
 	elements := timelineCardElements(t, payload)
-	if len(elements) != 1 || elements[0]["tag"] != "collapsible_panel" {
+	if len(elements) != 3 || elements[0]["tag"] != "collapsible_panel" {
 		t.Fatalf("real progress should keep the details panel, got %+v", elements)
+	}
+}
+
+// The completion notice uses the legacy text/style and remains outside the
+// collapsed history. Empty completed cards contain the notice alone.
+func TestTimelineCard_CompletionNoticeMatchesLegacy(t *testing.T) {
+	for _, lang := range []string{"zh", "en"} {
+		for _, withProgress := range []bool{false, true} {
+			payload := &core.ProgressCardPayload{
+				Style: "timeline", Lang: lang, State: core.ProgressCardStateCompleted,
+			}
+			if withProgress {
+				payload.Items = []core.ProgressCardEntry{{Kind: core.ProgressEntryThinking, Text: "review"}}
+			}
+			elements := timelineCardElements(t, payload)
+			wantCount := 1
+			if withProgress {
+				wantCount = 3
+				if elements[0]["tag"] != "collapsible_panel" || elements[1]["tag"] != "hr" {
+					t.Fatalf("notice should follow collapsed history: %+v", elements)
+				}
+			}
+			if len(elements) != wantCount {
+				t.Fatalf("notice card elements = %d, want %d", len(elements), wantCount)
+			}
+			notice := elements[len(elements)-1]
+			text := notice["text"].(map[string]any)
+			_, _, wantText := progressStateMeta(payload.State, lang, "")
+			if notice["tag"] != "div" || text["content"] != wantText || text["text_size"] != "notation" || text["text_color"] != "grey" {
+				t.Fatalf("completion notice differs from legacy: %+v", notice)
+			}
+			for _, state := range []core.ProgressCardState{core.ProgressCardStateRunning, core.ProgressCardStatePaused, core.ProgressCardStateInterrupted, core.ProgressCardStateFailed} {
+				payload.State = state
+				if strings.Contains(buildTimelineCard(payload), wantText) {
+					t.Fatalf("completion notice leaked into %s card", state)
+				}
+			}
+		}
+	}
+}
+
+// The completed panel's number is cumulative even when the body holds only
+// the latest entries; old payloads without TotalEntries retain their fallback.
+func TestTimelineCard_CompletedTitleUsesCumulativeCount(t *testing.T) {
+	payload := &core.ProgressCardPayload{
+		Style: "timeline", Lang: "zh", State: core.ProgressCardStateCompleted,
+		TotalEntries: 71, Truncated: true,
+		Items: []core.ProgressCardEntry{
+			{Kind: core.ProgressEntryThinking, Text: "latest thought"},
+			{Kind: core.ProgressEntryToolUse, Tool: "Read", Text: "latest file", Status: "completed"},
+		},
+	}
+	for _, tc := range []struct{ total, want int }{{71, 71}, {0, 2}} {
+		payload.TotalEntries = tc.total
+		elements := timelineCardElements(t, payload)
+		title := elements[0]["header"].(map[string]any)["title"].(map[string]any)["content"]
+		if title != fmt.Sprintf("执行过程（%d 条更新） ▸", tc.want) {
+			t.Fatalf("completed title counted only retained entries: %v", title)
+		}
 	}
 }

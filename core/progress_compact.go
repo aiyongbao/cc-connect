@@ -63,6 +63,7 @@ type ProgressCardPayload struct {
 	Version    int                 `json:"version,omitempty"`
 	Style      string              `json:"style,omitempty"`
 	UpdatedAt  string              `json:"updated_at,omitempty"` // RFC3339 time of the card update attempt; timeline only.
+	TitleDots  int                 `json:"title_dots,omitempty"` // Timeline running-title phase (1–3); advances with successful card writes.
 	TurnID     string              `json:"turn_id,omitempty"`
 	SessionKey string              `json:"session_key,omitempty"`
 	Agent      string              `json:"agent,omitempty"`
@@ -71,6 +72,10 @@ type ProgressCardPayload struct {
 	Entries    []string            `json:"entries,omitempty"` // legacy fallback
 	Items      []ProgressCardEntry `json:"items,omitempty"`   // ordered typed events
 	Truncated  bool                `json:"truncated"`
+
+	// Timeline thinking updates + tool calls before merging/trimming;
+	// results only change status and do not increment this cumulative count.
+	TotalEntries int `json:"total_entries,omitempty"`
 }
 
 // BuildProgressCardPayload encodes progress entries into a transport string.

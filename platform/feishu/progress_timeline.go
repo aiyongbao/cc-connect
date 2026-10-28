@@ -59,7 +59,7 @@ func buildTimelineCard(payload *core.ProgressCardPayload) string {
 	for _, segment := range segments {
 		rows := make([]map[string]any, 0, len(segment.texts))
 		for _, content := range texts[offset : offset+len(segment.texts)] {
-			rows = append(rows, timelineMarkdown(content, segment.kind))
+			rows = append(rows, timelineEntryElement(content, segment.kind))
 		}
 		offset += len(segment.texts)
 		if segment.kind == core.ProgressEntryToolUse {
@@ -77,16 +77,37 @@ func buildTimelineCard(payload *core.ProgressCardPayload) string {
 	if payload.State == core.ProgressCardStateCompleted && len(elements) > 0 {
 		// Completed turns already have a separate final reply. Keep the
 		// historical progress available without letting it dominate the chat.
-		title := i18n.Tf(core.MsgTimelineDetails, len(payload.Items)) + " ▸"
+		// Older payloads lack a cumulative count; keep rendering them while
+		// new cards report all updates rather than only the retained window.
+		count := payload.TotalEntries
+		if count == 0 {
+			count = len(payload.Items)
+		}
+		title := i18n.Tf(core.MsgTimelineDetails, count) + " ▸"
 		panel := buildProgressPanel(title, false, elements)
 		// Leave the outer panel on Feishu's theme-aware default background.
 		// Inner tool groups retain their existing neutral grey treatment.
 		delete(panel, "background_color")
 		elements = []map[string]any{panel}
 	}
+	if payload.State == core.ProgressCardStateCompleted {
+		// Reuse the legacy completion notice and styling outside the folded
+		// history so the separate final reply remains easy to find.
+		_, _, notice := progressStateMeta(payload.State, payload.Lang, payload.Agent)
+		if len(elements) > 0 {
+			elements = append(elements, map[string]any{"tag": "hr"})
+		}
+		elements = append(elements, map[string]any{
+			"tag": "div",
+			"text": map[string]any{
+				"tag": "plain_text", "content": notice,
+				"text_size": "notation", "text_color": "grey",
+			},
+		})
+	}
 	card := map[string]any{
 		"schema": "2.0", "config": map[string]any{"wide_screen_mode": true},
-		"header": map[string]any{"title": timelineHeaderTitle(i18n, titleKey), "template": color, "text_tag_list": timelineHeaderClockTags(payload.UpdatedAt)},
+		"header": map[string]any{"title": timelineHeaderTitle(i18n, titleKey, payload.TitleDots), "template": color, "text_tag_list": timelineHeaderClockTags(payload.UpdatedAt)},
 	}
 	// 终态无过程时不输出 body：飞书对空 body 仍渲染默认内边距，
 	// 头部下方会留下一条空白条。但飞书 schema 2.0 强制要求 body
@@ -117,10 +138,17 @@ func timelineIsTerminalWithoutProgress(payload *core.ProgressCardPayload, i18n *
 		payload.Items[0].Text == i18n.T(core.MsgTimelineNoProgress)
 }
 
-// timelineHeaderTitle keeps the state label as plain text; the clock moves to
-// the header's text_tag_list so Feishu renders it as a small metadata badge.
-func timelineHeaderTitle(i18n *core.I18n, titleKey core.MsgKey) map[string]any {
-	return map[string]any{"tag": "plain_text", "content": i18n.T(titleKey)}
+// timelineHeaderTitle animates the translated running label only on card writes.
+// Waiting and terminal labels retain their existing translations without dots.
+func timelineHeaderTitle(i18n *core.I18n, titleKey core.MsgKey, dots int) map[string]any {
+	title := i18n.T(titleKey)
+	if titleKey == core.MsgTimelineRunning {
+		if dots < 1 || dots > 3 {
+			dots = 1
+		}
+		title += strings.Repeat(".", dots)
+	}
+	return map[string]any{"tag": "plain_text", "content": title}
 }
 
 // timelineHeaderClockTags renders the last-update clock as a small neutral
@@ -155,7 +183,9 @@ func timelineCardSegments(payload *core.ProgressCardPayload, i18n *core.I18n) []
 			return
 		}
 		texts := group
-		if groupKind != core.ProgressEntryToolUse {
+		// Keep adjacent thoughts together in the timeline segment, but render
+		// one row/icon per message instead of flattening their text.
+		if groupKind != core.ProgressEntryToolUse && groupKind != core.ProgressEntryThinking {
 			texts = []string{strings.Join(group, "\n\n")}
 		}
 		segments = append(segments, timelineSegment{kind: groupKind, texts: texts})
@@ -185,11 +215,11 @@ func timelineCardSegments(payload *core.ProgressCardPayload, i18n *core.I18n) []
 			if name == "" {
 				name = "Tool"
 			}
-			line := "**" + escapeTimelineMarkdown(name) + "**"
+			line := name
 			if item.Text != "" && item.Text != name {
-				line += " · " + escapeTimelineMarkdown(item.Text)
+				line += " · " + strings.ReplaceAll(item.Text, "\n", " ")
 			}
-			group = append(group, line+" · <font color='grey'>"+i18n.T(status)+"</font>")
+			group = append(group, line+" · "+i18n.T(status))
 		default:
 			group = append(group, escapeTimelineMarkdown(item.Text))
 		}
@@ -198,9 +228,20 @@ func timelineCardSegments(payload *core.ProgressCardPayload, i18n *core.I18n) []
 	return segments
 }
 
-// timelineMarkdown adds one stable kind icon per merged thought or tool row.
-func timelineMarkdown(content string, kind core.ProgressCardEntryKind) map[string]any {
+// timelineEntryElement matches rich Reasoning rows: small grey plain text with
+// a stable outline icon. Plain text also keeps tool arguments from introducing
+// bold text or other formatting that would overpower the progress content.
+func timelineEntryElement(content string, kind core.ProgressCardEntryKind) map[string]any {
 	element := map[string]any{"tag": "markdown", "content": content}
+	if kind == core.ProgressEntryThinking || kind == core.ProgressEntryToolUse {
+		element = map[string]any{
+			"tag": "div",
+			"text": map[string]any{
+				"tag": "plain_text", "content": content,
+				"text_size": "notation", "text_color": "grey",
+			},
+		}
+	}
 	switch kind {
 	case core.ProgressEntryThinking:
 		element["icon"] = timelineIcon(timelineThinkingIcon)

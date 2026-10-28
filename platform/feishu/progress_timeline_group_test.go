@@ -22,7 +22,11 @@ func TestTimelineCard_AllToolCountsDefaultCollapsed(t *testing.T) {
 				}}
 				payload.Items = payload.Items[:count]
 				elements := timelineCardElements(t, payload)
-				if len(elements) != 1 || elements[0]["tag"] != "collapsible_panel" || elements[0]["expanded"] != false {
+				wantElements := 1
+				if state == core.ProgressCardStateCompleted {
+					wantElements = 3 // collapsed history, separator, completion notice
+				}
+				if len(elements) != wantElements || elements[0]["tag"] != "collapsible_panel" || elements[0]["expanded"] != false {
 					t.Fatalf("want one collapsed panel, got %+v", elements)
 				}
 				panel := elements[0]
@@ -45,9 +49,9 @@ func TestTimelineCard_AllToolCountsDefaultCollapsed(t *testing.T) {
 					t.Fatalf("tool details should be simple rows: %+v", children)
 				}
 				want := []string{
-					"**Bash** · pwd · <font color='grey'>已完成</font>",
-					"**Bash** · node --version · <font color='grey'>执行中</font>",
-					"**Bash** · git --version · <font color='grey'>失败</font>",
+					"Bash · pwd · 已完成",
+					"Bash · node --version · 执行中",
+					"Bash · git --version · 失败",
 				}
 				assertTimelineGreyIcon(t, panel["header"].(map[string]any), "setting_outlined")
 				if !strings.HasSuffix(title.(string), " ▸") {
@@ -55,7 +59,7 @@ func TestTimelineCard_AllToolCountsDefaultCollapsed(t *testing.T) {
 				}
 				for index, child := range children {
 					row := child.(map[string]any)
-					if row["content"] != want[index] {
+					if timelineElementContent(row) != want[index] {
 						t.Fatalf("missing or reordered tool detail: %v", row)
 					}
 					assertTimelineGreyIcon(t, row, "setting_outlined")
@@ -89,7 +93,7 @@ func TestTimelineCard_ToolGroupsDoNotCrossReasoning(t *testing.T) {
 			t.Fatalf("group %d has incorrect count: %v", index, title)
 		}
 	}
-	if elements[1]["content"] != "check results" || elements[3]["content"] != "one last check" {
+	if timelineElementContent(elements[1]) != "check results" || timelineElementContent(elements[3]) != "one last check" {
 		t.Fatalf("reasoning moved across tools: %+v", elements)
 	}
 	panel := elements[4]
@@ -97,14 +101,14 @@ func TestTimelineCard_ToolGroupsDoNotCrossReasoning(t *testing.T) {
 		t.Fatalf("single tool call must stay collapsed: %+v", panel)
 	}
 	children := panel["elements"].([]any)
-	if len(children) != 1 || !strings.Contains(children[0].(map[string]any)["content"].(string), "fifth") {
+	if len(children) != 1 || !strings.Contains(timelineElementContent(children[0].(map[string]any)), "fifth") {
 		t.Fatalf("single tool call detail was lost: %+v", panel)
 	}
 }
 
-// Keep reasoning and tools distinct even in monochrome and retain one prefix
-// for merged thoughts, rather than repeating an emoji on every paragraph.
-func TestTimelineCard_GreyIconsForMergedThinkingAndSingleTool(t *testing.T) {
+// Keep reasoning and tools distinct even in monochrome. Every thought gets
+// its own outline icon, including adjacent messages within the same segment.
+func TestTimelineCard_GreyIconsForEveryThinkingAndSingleTool(t *testing.T) {
 	payload := &core.ProgressCardPayload{Style: "timeline", Lang: "en", Items: []core.ProgressCardEntry{
 		{Kind: core.ProgressEntryThinking, Text: "first thought"},
 		{Kind: core.ProgressEntryThinking, Text: "second thought"},
@@ -112,20 +116,33 @@ func TestTimelineCard_GreyIconsForMergedThinkingAndSingleTool(t *testing.T) {
 		{Kind: core.ProgressEntryInfo, Text: "update"},
 	}}
 	elements := timelineCardElements(t, payload)
-	if len(elements) != 3 || elements[0]["content"] != "first thought\n\nsecond thought" {
-		t.Fatalf("thoughts must remain merged: %+v", elements)
+	if len(elements) != 4 || timelineElementContent(elements[0]) != "first thought" || timelineElementContent(elements[1]) != "second thought" {
+		t.Fatalf("thoughts must retain separate icon rows: %+v", elements)
 	}
 	assertTimelineGreyIcon(t, elements[0], "efficiency_outlined")
-	assertTimelineGreyIcon(t, elements[1]["header"].(map[string]any), "setting_outlined")
-	toolRow := elements[1]["elements"].([]any)[0].(map[string]any)
+	assertTimelineGreyIcon(t, elements[1], "efficiency_outlined")
+	assertTimelineGreyIcon(t, elements[2]["header"].(map[string]any), "setting_outlined")
+	toolRow := elements[2]["elements"].([]any)[0].(map[string]any)
 	assertTimelineGreyIcon(t, toolRow, "setting_outlined")
-	if _, hasIcon := elements[2]["icon"]; hasIcon {
-		t.Fatalf("informational updates should not have a kind icon: %+v", elements[2])
+	if _, hasIcon := elements[3]["icon"]; hasIcon {
+		t.Fatalf("informational updates should not have a kind icon: %+v", elements[3])
 	}
-	for _, element := range []map[string]any{elements[0], toolRow, elements[2]} {
-		if strings.ContainsAny(element["content"].(string), "🧠✅❌⏳🔧") {
+	for _, element := range []map[string]any{elements[0], elements[1], toolRow, elements[3]} {
+		if strings.ContainsAny(timelineElementContent(element), "🧠✅❌⏳🔧") {
 			t.Fatalf("colorful emoji remained in progress: %+v", element)
 		}
+	}
+	// Completion wraps the rows in history; expanding it must still expose
+	// one icon per thought instead of flattening the consecutive messages.
+	payload.State = core.ProgressCardStateCompleted
+	completed := timelineCardElements(t, payload)
+	children := completed[0]["elements"].([]any)
+	for i, want := range []string{"first thought", "second thought"} {
+		row := children[i].(map[string]any)
+		if timelineElementContent(row) != want {
+			t.Fatalf("completed thought %d lost its boundary: %+v", i, row)
+		}
+		assertTimelineGreyIcon(t, row, "efficiency_outlined")
 	}
 }
 
@@ -151,4 +168,39 @@ func timelineCardElements(t *testing.T, payload *core.ProgressCardPayload) []map
 		t.Fatal(err)
 	}
 	return card.Body.Elements
+}
+
+// timelineElementContent reads either a progress text row or an informational
+// markdown element from the actual rendered card.
+func timelineElementContent(element map[string]any) string {
+	if text, ok := element["text"].(map[string]any); ok {
+		content, _ := text["content"].(string)
+		return content
+	}
+	content, _ := element["content"].(string)
+	return content
+}
+
+// collectTimelineTextContents preserves row order across nested tool/history
+// panels while reading both plain text and informational markdown.
+func collectTimelineTextContents(t *testing.T, payload *core.ProgressCardPayload) []string {
+	t.Helper()
+	var contents []string
+	var visit func([]map[string]any)
+	visit = func(elements []map[string]any) {
+		for _, element := range elements {
+			if content := timelineElementContent(element); content != "" {
+				contents = append(contents, content)
+			}
+			if children, ok := element["elements"].([]any); ok {
+				nested := make([]map[string]any, 0, len(children))
+				for _, child := range children {
+					nested = append(nested, child.(map[string]any))
+				}
+				visit(nested)
+			}
+		}
+	}
+	visit(timelineCardElements(t, payload))
+	return contents
 }

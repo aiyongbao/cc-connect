@@ -11,6 +11,10 @@ import (
 )
 
 const (
+	// Match rich cards: retain recent thoughts and tool calls independently,
+	// while preserving their relative order in the timeline.
+	timelineMaxEntriesPerKind = 10
+
 	// Timeline labels are shared with platform renderers through the i18n API.
 	MsgTimelineRunning       MsgKey = "timeline_running"
 	MsgTimelineCompleted     MsgKey = "timeline_completed"
@@ -50,6 +54,7 @@ type timelineProgress struct {
 	payload        ProgressCardPayload
 	handle         any       // sendMu protects the platform's preview handle
 	lastUpdate     time.Time // sendMu protects the successful-send timestamp
+	titleDots      int       // sendMu protects the last successfully sent running-title phase
 	interval       time.Duration
 	flushTimer     *time.Timer // trailing flush prevents throttling from hiding the last event
 	flushSeq       uint64      // invalidates timer callbacks that lost a stop race
@@ -178,20 +183,19 @@ func (w *timelineProgress) Handle(event Event, display DisplayCfg) bool {
 	if entry.Text == "" {
 		return true
 	}
+	// Count accepted progress before discarding history. A tool
+	// result only updates its call's status, so it does not count twice.
+	w.payload.TotalEntries++
 	items := w.payload.Items
-	// Drop the placeholder once real progress arrives. Merge only adjacent
-	// thinking; tools remain individual rows and are grouped by the renderer.
+	// Drop the placeholder once real progress arrives. Keep each thought as
+	// its own row so rendering and retention preserve every message's icon.
 	if len(items) == 1 && items[0].Kind == ProgressEntryInfo {
 		items = nil
 	}
-	if n := len(items); n > 0 && entry.Kind == ProgressEntryThinking && items[n-1].Kind == entry.Kind {
-		items[n-1].Text = trimCompactProgressText(items[n-1].Text+"\n\n"+entry.Text, 4000)
-	} else {
-		items = append(items, entry)
-	}
+	items = append(items, entry)
 	// Bound both payload size and card element count during long-running work.
-	if len(items) > 40 {
-		items = items[len(items)-40:]
+	if trimmed := recentTimelineEntriesByKind(items); len(trimmed) < len(items) {
+		items = trimmed
 		w.payload.Truncated = true
 	}
 	total := 0

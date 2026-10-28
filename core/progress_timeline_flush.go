@@ -45,6 +45,11 @@ func (w *timelineProgress) flush(force bool) {
 	// untouched so a failed update cannot make an old card look current.
 	snapshot := w.payload
 	snapshot.UpdatedAt = time.Now().Format(time.RFC3339)
+	// Animate only as part of existing writes; throttled events and failed
+	// requests must not skip a phase or introduce extra API requests.
+	if snapshot.State == ProgressCardStateRunning {
+		snapshot.TitleDots = w.titleDots%3 + 1
+	}
 	b, err := json.Marshal(snapshot)
 	w.mu.Unlock()
 	if err != nil {
@@ -70,6 +75,9 @@ func (w *timelineProgress) flush(force bool) {
 		return
 	}
 	w.lastUpdate = time.Now()
+	if snapshot.State == ProgressCardStateRunning {
+		w.titleDots = snapshot.TitleDots
+	}
 }
 
 // scheduleFlushLocked coalesces throttled updates. A cancelled callback must not
