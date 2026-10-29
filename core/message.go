@@ -403,6 +403,15 @@ type LocationAttachment struct {
 	ProximityAlertRadius int     // maximum distance for proximity alerts in meters (optional)
 }
 
+// InitialMessageContext carries platform background needed only when starting a
+// fresh agent conversation. Keep it separate from ordinary quotes and history,
+// which remain relevant even when an existing conversation is resumed.
+type InitialMessageContext struct {
+	Text   string
+	Images []ImageAttachment
+	Files  []FileAttachment
+}
+
 // Message represents a unified incoming message from any platform.
 type Message struct {
 	SessionKey   string // unique key for user context, e.g. "feishu:{chatID}:{userID}"
@@ -421,6 +430,10 @@ type Message struct {
 	ExtraContent string              // platform-enriched content (e.g. location text, reply quote) prepended for the agent
 	OnAccepted   func()              // called once when the engine accepts this message for an agent turn
 	ChannelKey   string              // platform-provided channel identifier for workspace binding (optional)
+
+	// InitialContext is consumed only by the first message of a fresh agent
+	// conversation; normal quotes and history belong in ExtraContent instead.
+	InitialContext *InitialMessageContext
 	// LegacyChannelKey is the platform-provided channel identifier used by an
 	// older workspace-binding scope. When both keys are set, multi-workspace
 	// routing atomically migrates the legacy binding to ChannelKey.

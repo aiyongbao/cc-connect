@@ -565,6 +565,9 @@ type queuedMessage struct {
 // interactiveState tracks a running interactive agent session and its permission state.
 type interactiveState struct {
 	agentSession AgentSession
+	// Only a genuinely fresh agent session may consume platform bootstrap
+	// context; protected by mu and cleared before its first message is sent.
+	initialContextPending bool
 	// busySession is the core.Session whose busy lock guards the in-flight
 	// turn. Set by getOrCreateInteractiveStateWith so /stop can release the
 	// lock after tearing the turn down (#1830).
@@ -3126,7 +3129,7 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 	}
 
 	content := strings.TrimSpace(msg.Content)
-	if content == "" && msg.ExtraContent == "" && len(msg.Images) == 0 && len(msg.Files) == 0 && msg.Location == nil {
+	if content == "" && msg.ExtraContent == "" && msg.InitialContext == nil && len(msg.Images) == 0 && len(msg.Files) == 0 && msg.Location == nil {
 		return
 	}
 
@@ -3344,6 +3347,15 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 			}
 		}
 		// ── end self-heal; continue with steering or queueing below ─────────
+		// Only discard bootstrap background after recovery has had a chance
+		// to acquire a fresh turn. Queued/steered follow-ups already share the
+		// running conversation, while a recovered fresh turn may need it.
+		if msg.InitialContext != nil {
+			msg.InitialContext = nil
+			if strings.TrimSpace(msg.Content) == "" && len(msg.Images) == 0 && len(msg.Files) == 0 {
+				return
+			}
+		}
 		// In steer mode, ordinary plain text guides the in-flight turn.
 		// Attachments retain FIFO delivery because active-turn steering only
 		// supports text input.
@@ -4160,12 +4172,17 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 
 	turnStart := time.Now()
 
-	e.i18n.DetectAndSet(msg.Content)
-	session.AddHistory("user", msg.Content)
-	// Persist user message immediately so crashes between user input and
-	// assistant reply don't lose it (the assistant-side Save below depends
-	// on the turn completing without a process crash).
-	sessions.Save()
+	// Bootstrap background is resolved after session selection, including any
+	// failed-resume fallback. Ordinary messages keep their early persistence.
+	hasInitialContext := msg.InitialContext != nil
+	if !hasInitialContext {
+		e.i18n.DetectAndSet(msg.Content)
+		session.AddHistory("user", msg.Content)
+		// Persist user message immediately so crashes between user input and
+		// assistant reply don't lose it (the assistant-side Save below depends
+		// on the turn completing without a process crash).
+		sessions.Save()
+	}
 
 	// Use the agent override when available (multi-workspace mode)
 	var agentOverride Agent
@@ -4201,6 +4218,15 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	if as == nil {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgFailedToStartAgentSession))
 		return
+	}
+	applyInitialMessageContext(state, msg)
+	if hasInitialContext {
+		if strings.TrimSpace(msg.Content) == "" && len(msg.Images) == 0 && len(msg.Files) == 0 {
+			return
+		}
+		e.i18n.DetectAndSet(msg.Content)
+		session.AddHistory("user", msg.Content)
+		sessions.Save()
 	}
 	e.cancelAgentSessionIdleClose(state)
 
@@ -4608,6 +4634,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 			session.SetAgentSessionID("", agent.Name())
 			sessions.Save()
 			startAt = time.Now()
+			isResume = false
 			agentSession, err = agent.StartSession(e.ctx, "")
 			startElapsed = time.Since(startAt)
 			if err == nil {
@@ -4661,12 +4688,13 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	}
 
 	newState := &interactiveState{
-		agentSession:     agentSession,
-		busySession:      session,
-		platform:         p,
-		replyCtx:         replyCtx,
-		agent:            agent,
-		eventsNeedResync: true,
+		agentSession:          agentSession,
+		initialContextPending: !isResume,
+		busySession:           session,
+		platform:              p,
+		replyCtx:              replyCtx,
+		agent:                 agent,
+		eventsNeedResync:      true,
 	}
 	adoptPendingFromPlaceholder(e.interactiveStates[sessionKey], newState)
 	state = newState

@@ -938,6 +938,8 @@ func TestCUJ_E5_TimerDisappearsAfterFiring(t *testing.T) {
 // ===========================================================================
 
 func TestCUJ_B12_RestartRestoresEverything(t *testing.T) {
+	t.Run("thread retry does not replay root context", testThreadRetryAfterRestartSkipsRootContext)
+
 	dir := t.TempDir()
 	storePath := dir + "/sessions.json"
 	cronDir := dir + "/cron"

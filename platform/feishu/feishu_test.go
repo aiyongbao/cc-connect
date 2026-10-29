@@ -421,8 +421,8 @@ func TestOnMessageThreadIsolationBootstrapsExistingThreadContext(t *testing.T) {
 		if msg.Content != "看看这个" {
 			t.Fatalf("Content = %q, want trigger text", msg.Content)
 		}
-		if !strings.Contains(msg.ExtraContent, "审核 PBS: yingshi_video_i2v_input-text-cn") {
-			t.Fatalf("ExtraContent = %q, want existing thread root content", msg.ExtraContent)
+		if msg.ExtraContent != "" || msg.InitialContext == nil || !strings.Contains(msg.InitialContext.Text, "审核 PBS: yingshi_video_i2v_input-text-cn") {
+			t.Fatalf("root must be fresh-session-only context, got ExtraContent=%q InitialContext=%+v", msg.ExtraContent, msg.InitialContext)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for bootstrapped thread message")

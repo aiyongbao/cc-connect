@@ -1932,8 +1932,24 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 	if parentID != "" && (!p.threadIsolation || !isThreadSessionKey(sessionKey) || rctx.bootstrapThread) {
 		quoted = p.fetchQuotedMessage(ctx, parentID)
 	}
+	// A thread's in-memory activation marker is lost on restart, while the
+	// agent conversation survives. Let core include this bootstrap only if it
+	// actually starts fresh; ordinary reply quotes keep their existing path.
+	var initial *core.InitialMessageContext
+	var initialFiles []quotedFileMeta
+	parts := strings.SplitN(sessionKey, ":", 3)
+	rootID := ""
+	if len(parts) == 3 {
+		rootID, _ = parseThreadRootID(parts[2])
+	}
+	if p.threadIsolation && rootID != "" && parentID == rootID && rctx.bootstrapThread && (quoted.text != "" || len(quoted.images) > 0 || len(quoted.files) > 0) {
+		initial = &core.InitialMessageContext{Text: quoted.text, Images: quoted.images}
+		initialFiles = quoted.files
+		quoted = quotedMessage{}
+	}
 	historyText := p.formatGroupHistory(groupHistoryCtx)
 	dispatchCore := func(msg *core.Message) {
+		msg.InitialContext = initial
 		if historyText != "" {
 			msg.ExtraContent = joinFeishuExtraContent(historyText, msg.ExtraContent)
 			msg.OnAccepted = groupHistoryCtx.onAccepted
@@ -1959,7 +1975,10 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 		// zero file-resource API calls.
 		approvedFileMetas := p.filterQuotedFilesForUser(quoted.files, mentions, userID)
 		quotedFiles := p.downloadQuotedFiles(ctx, approvedFileMetas)
-		if text == "" && historyText == "" && quoted.text == "" && len(quoted.images) == 0 && len(quotedFiles) == 0 {
+		if initial != nil {
+			initial.Files = p.downloadQuotedFiles(ctx, p.filterQuotedFilesForUser(initialFiles, mentions, userID))
+		}
+		if text == "" && historyText == "" && initial == nil && quoted.text == "" && len(quoted.images) == 0 && len(quotedFiles) == 0 {
 			slog.Debug(p.tag()+": dropping empty text after mention stripping",
 				"message_id", messageID,
 				"raw_text_len", len(textBody.Text),
@@ -2092,7 +2111,7 @@ func (p *Platform) dispatchMessageWithHistory(ctx context.Context, msgType, cont
 				FileName: pf.FileName,
 			})
 		}
-		if text == "" && historyText == "" && len(images) == 0 && len(postFiles) == 0 && quoted.text == "" && len(quoted.images) == 0 {
+		if text == "" && historyText == "" && initial == nil && len(images) == 0 && len(postFiles) == 0 && quoted.text == "" && len(quoted.images) == 0 {
 			return
 		}
 		// Flush any image batch buffered earlier in this session (#1686 P1-B).
