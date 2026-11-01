@@ -156,6 +156,13 @@ func (w *timelineProgress) Handle(event Event, display DisplayCfg) bool {
 		}
 	}()
 	if w.payload.State != ProgressCardStateRunning {
+		// Shutdown seals the card before cancelling the event loop. Keep
+		// owning late progress so it cannot open a legacy fallback card;
+		// results and other events still need their normal engine handling.
+		switch event.Type {
+		case EventThinking, EventToolUse, EventToolResult:
+			return true
+		}
 		return false
 	}
 	var entry ProgressCardEntry
