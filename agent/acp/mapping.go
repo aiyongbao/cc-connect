@@ -311,31 +311,14 @@ func mapSessionUpdateFallback(sessionID string, kind string, update json.RawMess
 }
 
 func mapPlan(sessionID string, update json.RawMessage) []core.Event {
-	var u struct {
-		Entries []struct {
-			Content  string `json:"content"`
-			Priority string `json:"priority"`
-			Status   string `json:"status"`
-		} `json:"entries"`
-	}
-	if err := json.Unmarshal(update, &u); err != nil || len(u.Entries) == 0 {
+	progress := core.ParseTaskProgress("acp_plan", update)
+	if progress == nil {
 		return nil
 	}
-	var b strings.Builder
-	for i, e := range u.Entries {
-		if i > 0 {
-			b.WriteByte('\n')
-		}
-		line := e.Content
-		if e.Status != "" {
-			line = "[" + e.Status + "] " + line
-		}
-		b.WriteString(line)
-	}
 	return []core.Event{{
-		Type:      core.EventThinking,
-		Content:   b.String(),
-		SessionID: sessionID,
+		Type:         core.EventTaskProgress,
+		TaskProgress: progress,
+		SessionID:    sessionID,
 	}}
 }
 

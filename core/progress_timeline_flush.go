@@ -26,7 +26,7 @@ func (w *timelineProgress) flush(force bool) {
 	if w.payload.State != ProgressCardStateRunning && w.handle == nil {
 		// waitingForProgressLocked only matches Running; a terminal segment
 		// with no real entries still has just the placeholder row.
-		if len(w.payload.Items) <= 1 {
+		if len(w.payload.Steps) == 0 && len(w.payload.Items) <= 1 {
 			w.mu.Unlock()
 			return
 		}

@@ -5863,6 +5863,12 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				event.Content = "" // preserve session metadata without opening a text preview
 			}
 		}
+		if timeline == nil && event.Type == EventTaskProgress {
+			// Preserve the established non-timeline behavior: ACP plans used to
+			// arrive as thinking text. Timeline mode consumes the structured form.
+			event.Type = EventThinking
+			event.Content = formatTaskProgressFallback(event.TaskProgress)
+		}
 		switch event.Type {
 		case EventModelSwitch:
 			e.relayModelSwitch(p, replyCtx, sessionKey, event.ModelSwitch)
@@ -6385,7 +6391,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				state.mu.Lock()
 				stopped := state.stopped || state.timeline != timeline
 				if !stopped {
+					previousTimeline := timeline
 					timeline = newTimelineProgressLocked(e.ctx, state, sessionKey, e.agent.Name(), e.i18n.CurrentLang(), workspaceRenderer, e.display.CardMode)
+					timeline.inheritTaskProgress(previousTimeline)
 				}
 				state.mu.Unlock()
 				if stopped {

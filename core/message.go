@@ -471,8 +471,24 @@ const (
 	EventPermissionRequest EventType = "permission_request" // agent requests permission via stdio protocol
 	EventUserInputRequest  EventType = "user_input_request" // non-blocking question; answer is a user message
 	EventThinking          EventType = "thinking"           // thinking/processing status
+	EventTaskProgress      EventType = "task_progress"      // explicit user-facing business steps
 	EventModelSwitch       EventType = "model_switch"       // agent CLI moved the turn to another model on its own (see ModelSwitch)
 )
+
+// TaskProgressStep is one explicit, user-facing business step published by an
+// agent. It is intentionally separate from tool calls and private reasoning.
+type TaskProgressStep struct {
+	Title  string `json:"title"`
+	Status string `json:"status"` // pending, in_progress, or completed
+}
+
+// TaskProgress is an agent-authored public plan update. Adapters should only
+// emit it from a native plan/todo event or a successfully accepted plan tool.
+type TaskProgress struct {
+	Source      string             `json:"source,omitempty"`
+	Explanation string             `json:"explanation,omitempty"`
+	Steps       []TaskProgressStep `json:"steps"`
+}
 
 // ModelSwitch describes a model change the agent CLI made without being asked
 // to, e.g. Claude Code re-running a request that the primary model's
@@ -529,6 +545,7 @@ type Event struct {
 	Metadata                 map[string]any // optional metadata from agent (e.g. compaction_continue)
 	Synthetic                bool           // true if this is a synthetic/generated message (not from real user)
 	ModelSwitch              *ModelSwitch   // populated for EventModelSwitch
+	TaskProgress             *TaskProgress  // populated for EventTaskProgress
 }
 
 // HistoryEntry is one turn in a conversation.

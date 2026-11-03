@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/chenhg5/cc-connect/core"
 )
@@ -378,5 +379,106 @@ func TestTimelineCard_TruncatedHintUsesRichStyleAndCount(t *testing.T) {
 	}
 	if _, hasIcon := elements[0]["icon"]; hasIcon {
 		t.Fatalf("truncated hint should not add a reasoning icon: %+v", elements[0])
+	}
+}
+
+func TestTimelineCard_BusinessStepsArePrimaryAndTechnicalWorkIsFlatFold(t *testing.T) {
+	payload := &core.ProgressCardPayload{
+		Style: "timeline", Lang: "zh", State: core.ProgressCardStateRunning,
+		StartedAt:            time.Now().Add(-45 * time.Second).Format(time.RFC3339),
+		LastActivityAt:       time.Now().Add(-3 * time.Second).Format(time.RFC3339),
+		CurrentStepStartedAt: time.Now().Add(-20 * time.Second).Format(time.RFC3339),
+		LatestActivity:       "正在核对消息更新链路",
+		Steps: []core.TaskProgressStep{
+			{Title: "梳理现有卡片", Status: "completed"},
+			{Title: "实现业务步骤主视图", Status: "in_progress"},
+			{Title: "验证最终样式", Status: "pending"},
+		},
+		TotalEntries: 2,
+		Items: []core.ProgressCardEntry{
+			{Kind: core.ProgressEntryThinking, Text: "检查事件路由"},
+			{Kind: core.ProgressEntryToolUse, Tool: "Read", Text: "progress_timeline.go", Status: "completed"},
+		},
+	}
+	elements := timelineCardElements(t, payload)
+	if len(elements) != 6 {
+		t.Fatalf("business card elements = %d, want 6: %+v", len(elements), elements)
+	}
+	for i, wantBackground := range []string{"default", "blue-50", "default"} {
+		row := elements[map[int]int{0: 0, 1: 1, 2: 3}[i]]
+		if row["tag"] != "column_set" || row["background_style"] != wantBackground {
+			t.Fatalf("step %d hierarchy = %+v", i, row)
+		}
+	}
+	if hint := elements[2]; hint["tag"] != "markdown" || !strings.Contains(fmt.Sprint(hint["content"]), "正在核对消息更新链路") {
+		t.Fatalf("active-step hint = %+v", hint)
+	}
+	panel := elements[4]
+	if panel["tag"] != "collapsible_panel" || panel["expanded"] != false {
+		t.Fatalf("technical work is not collapsed: %+v", panel)
+	}
+	if title := panel["header"].(map[string]any)["title"].(map[string]any)["content"]; title != "技术执行明细（2 条更新） ▸" {
+		t.Fatalf("technical title = %v", title)
+	}
+	children := panel["elements"].([]any)
+	for _, child := range children {
+		if child.(map[string]any)["tag"] == "collapsible_panel" {
+			t.Fatalf("technical fold contains a nested panel: %+v", children)
+		}
+	}
+	footer := elements[5]["text"].(map[string]any)["content"].(string)
+	if !strings.Contains(footer, "已用") || !strings.Contains(footer, "本步") || !strings.Contains(footer, "最近活动") {
+		t.Fatalf("business timing footer = %q", footer)
+	}
+}
+
+func TestTimelineCard_UnfinishedBusinessStepsRemainVisibleAtCompletion(t *testing.T) {
+	payload := &core.ProgressCardPayload{
+		Style: "timeline", Lang: "zh", State: core.ProgressCardStateCompleted,
+		StartedAt: time.Now().Add(-time.Minute).Format(time.RFC3339),
+		Steps: []core.TaskProgressStep{
+			{Title: "已核验数据", Status: "completed"},
+			{Title: "等待补充来源", Status: "in_progress"},
+			{Title: "交付最终结论", Status: "pending"},
+		},
+	}
+	raw := buildTimelineCard(payload)
+	var card struct {
+		Header struct {
+			Title    struct{ Content string }
+			Template string
+		}
+		Body struct{ Elements []map[string]any }
+	}
+	if err := json.Unmarshal([]byte(raw), &card); err != nil {
+		t.Fatal(err)
+	}
+	if card.Header.Template != "orange" || card.Header.Title.Content != "本轮回复结束 · 步骤尚未全部完成" {
+		t.Fatalf("unfinished terminal header = %+v", card.Header)
+	}
+	if strings.Contains(raw, "blue-50") || strings.Count(raw, "本轮未完成") != 2 {
+		t.Fatalf("terminal steps imply live or completed work: %s", raw)
+	}
+	if len(card.Body.Elements) < 5 || card.Body.Elements[0]["tag"] != "column_set" {
+		t.Fatalf("business steps disappeared at completion: %+v", card.Body.Elements)
+	}
+
+	for i := range payload.Steps {
+		payload.Steps[i].Status = "completed"
+	}
+	raw = buildTimelineCard(payload)
+	if !strings.Contains(raw, `"template":"green"`) || strings.Contains(raw, "步骤尚未全部完成") {
+		t.Fatalf("fully completed plan did not return to green: %s", raw)
+	}
+}
+
+func TestTimelineCard_BusinessStepTextCannotInjectCardMarkup(t *testing.T) {
+	payload := &core.ProgressCardPayload{
+		Style: "timeline", Lang: "zh", State: core.ProgressCardStateRunning,
+		Steps: []core.TaskProgressStep{{Title: "<at id=ou_secret>all</at> **伪装**", Status: "in_progress"}},
+	}
+	raw := buildTimelineCard(payload)
+	if strings.Contains(raw, "<at id=") || !strings.Contains(raw, "\\u0026lt;at id=ou\\\\_secret") {
+		t.Fatalf("business step markup was not escaped: %s", raw)
 	}
 }
