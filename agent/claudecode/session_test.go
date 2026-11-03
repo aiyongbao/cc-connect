@@ -1053,6 +1053,13 @@ func TestHelperProcess(t *testing.T) {
 		mode = os.Args[len(os.Args)-1]
 	}
 	switch mode {
+	case "claude-task-env":
+		payload, _ := json.Marshal(map[string]any{
+			"type": "result", "result": os.Getenv("CLAUDE_CODE_ENABLE_TODO_TOOLS"),
+		})
+		_, _ = os.Stdout.Write(append(payload, '\n'))
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		os.Exit(0)
 	case "sleep":
 		time.Sleep(30 * time.Second)
 		os.Exit(0)
@@ -1155,6 +1162,52 @@ func TestHelperProcess(t *testing.T) {
 		os.Exit(0)
 	default:
 		os.Exit(2)
+	}
+}
+
+// Newer/custom model IDs omit task tools unless opted in. A prompt asking for
+// a plan cannot produce progress events when the CLI never exposes the tools.
+func TestNewClaudeSession_EnablesNativeTaskToolsWithExplicitOverrides(t *testing.T) {
+	for _, tc := range []struct {
+		name, inherited, configured, want string
+	}{
+		{"default", "", "", "1"},
+		{"inherited opt out", "0", "", "0"},
+		{"configured opt out", "", "0", "0"},
+		{"configuration overrides inherited", "0", "1", "1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("CLAUDE_CODE_ENABLE_TODO_TOOLS", tc.inherited)
+			if tc.inherited == "" {
+				_ = os.Unsetenv("CLAUDE_CODE_ENABLE_TODO_TOOLS")
+			}
+			extra := []string{"GO_WANT_HELPER_PROCESS=1"}
+			if tc.configured != "" {
+				extra = append(extra, "CLAUDE_CODE_ENABLE_TODO_TOOLS="+tc.configured)
+			}
+			cs, err := newClaudeSession(context.Background(), t.TempDir(), os.Args[0],
+				[]string{"-test.run=TestHelperProcess", "--", "claude-task-env"},
+				"", "custom-model", "", "", "default", "", "",
+				[]string{"Read"}, []string{"TaskCreate"}, nil, extra, "", false,
+				core.SpawnOptions{}, 0, 0, t.TempDir(), "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cs.Close() })
+			select {
+			case event := <-cs.Events():
+				if event.Type != core.EventResult || event.Content != tc.want {
+					t.Fatalf("child received %#v, want task-tool flag %q", event, tc.want)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("child did not report task-tool flag")
+			}
+			// Enabling availability must not rewrite user permission rules.
+			args := strings.Join(cs.cmd.Args, " ")
+			if !strings.Contains(args, "--allowedTools Read") || !strings.Contains(args, "--disallowedTools TaskCreate") {
+				t.Fatalf("configured tool rules changed: %s", args)
+			}
+		})
 	}
 }
 

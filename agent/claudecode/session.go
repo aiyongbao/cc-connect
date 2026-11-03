@@ -133,6 +133,8 @@ type claudeSession struct {
 
 const backgroundLaunchPrefix = "tool:"
 
+const nativeTaskToolsEnv = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
+
 // StartupWarning implements core.StartupWarner. Returns a non-empty string
 // when the session was started under degraded conditions that the user should
 // know about (e.g. bypassPermissions downgraded to auto under root).
@@ -429,6 +431,8 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 	// spawn. WorkDir tells BuildSpawnCommand to wrap the command with a chdir;
 	// the path itself is passed through RunAsChdirEnv below.
 	spawnOpts.WorkDir = workDir
+	// This non-secret CLI behavior flag must also survive run_as_user.
+	spawnOpts.EnvAllowlist = append(append([]string(nil), spawnOpts.EnvAllowlist...), nativeTaskToolsEnv)
 	cmd := core.BuildSpawnCommand(sessionCtx, spawnOpts, cliBin, allArgs...)
 	cmd.Dir = workDir
 	// Put the child into its own process group so Close() can terminate the
@@ -439,7 +443,10 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 	prepareCmdForKill(cmd)
 	// Filter out CLAUDECODE env var to prevent "nested session" detection,
 	// since cc-connect is a bridge, not a nested Claude Code session.
-	env := filterEnv(os.Environ(), "CLAUDECODE")
+	// Recent Claude Code versions omit task tools for newer/custom model IDs.
+	// Opt in so native progress can be published; explicit service/project
+	// environment values still win, and tool deny rules remain untouched.
+	env := core.MergeEnv([]string{nativeTaskToolsEnv + "=1"}, filterEnv(os.Environ(), "CLAUDECODE"))
 	if len(extraEnv) > 0 {
 		env = core.MergeEnv(env, extraEnv)
 	}
