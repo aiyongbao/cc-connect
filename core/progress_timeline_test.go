@@ -68,6 +68,180 @@ func TestTimelineProgress_AdjacentEventsAndSimpleToolStatus(t *testing.T) {
 	}
 }
 
+func TestTimelineProgress_ExplicitBusinessStepsDrivePrimaryState(t *testing.T) {
+	state, p := timelineTestState()
+	w := newTimelineProgressLocked(context.Background(), state, "test:u", "codex", LangChinese, nil, "timeline")
+	w.Start()
+	t.Cleanup(func() { w.Finalize(ProgressCardStateCompleted) })
+	progress := &TaskProgress{
+		Source:      "codex_plan",
+		Explanation: "开始实现卡片主视图",
+		Steps: []TaskProgressStep{
+			{Title: "梳理现有卡片", Status: "completed"},
+			{Title: "实现业务步骤主视图", Status: "in_progress"},
+			{Title: "验证最终样式", Status: "pending"},
+		},
+	}
+	if !w.Handle(Event{Type: EventTaskProgress, TaskProgress: progress}, DisplayCfg{}) {
+		t.Fatal("task progress was not consumed")
+	}
+	payload := lastTimelinePayload(t, p)
+	if len(payload.Steps) != 3 || payload.Steps[1].Status != "in_progress" {
+		t.Fatalf("business steps = %+v", payload.Steps)
+	}
+	if payload.LatestActivity != "开始实现卡片主视图" || payload.CurrentStepStartedAt == "" {
+		t.Fatalf("business activity state = %+v", payload)
+	}
+
+	if w.Handle(Event{Type: EventText, Content: "正在核对飞书渲染结构"}, DisplayCfg{}) {
+		t.Fatal("public text should remain available to the normal final-reply path")
+	}
+	payload = lastTimelinePayload(t, p)
+	if payload.LatestActivity != "正在核对飞书渲染结构" {
+		t.Fatalf("latest public activity = %q", payload.LatestActivity)
+	}
+
+	w.Finalize(ProgressCardStateCompleted)
+	payload = lastTimelinePayload(t, p)
+	if payload.State != ProgressCardStateCompleted || payload.Steps[1].Status != "in_progress" || payload.Steps[2].Status != "pending" {
+		t.Fatalf("completion fabricated business progress: %+v", payload)
+	}
+}
+
+func TestTimelineProgress_PlanToolPublishesOnlyAfterSuccessfulResult(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		result   Event
+		wantCard bool
+	}{
+		{name: "success", result: Event{Type: EventToolResult, ToolName: "update_plan", ToolStatus: "completed"}, wantCard: true},
+		{name: "failure", result: Event{Type: EventToolResult, ToolName: "update_plan", ToolStatus: "failed"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			state, p := timelineTestState()
+			w := newTimelineProgressLocked(context.Background(), state, "test:u", "codex", LangEnglish, nil, "timeline")
+			w.Start()
+			w.Handle(Event{
+				Type:      EventToolUse,
+				ToolName:  "update_plan",
+				ToolInput: `{"plan":[{"step":"Inspect","status":"completed"},{"step":"Implement","status":"in_progress"}]}`,
+			}, DisplayCfg{})
+			if total := len(p.getPreviewOpens()) + len(p.getPreviewUpdates()); total != 0 {
+				t.Fatalf("plan appeared before its result: %d writes", total)
+			}
+			w.Handle(tc.result, DisplayCfg{})
+			if tc.wantCard {
+				payload := lastTimelinePayload(t, p)
+				if len(payload.Steps) != 2 || payload.Steps[1].Status != "in_progress" {
+					t.Fatalf("successful plan = %+v", payload.Steps)
+				}
+			} else if total := len(p.getPreviewOpens()) + len(p.getPreviewUpdates()); total != 0 {
+				t.Fatalf("failed plan rendered a card: %d writes", total)
+			}
+			w.Finalize(ProgressCardStateCompleted)
+		})
+	}
+}
+
+func TestTimelineProgress_DeletedLastTaskClearsBusinessSteps(t *testing.T) {
+	state, p := timelineTestState()
+	w := newTimelineProgressLocked(context.Background(), state, "test:u", "test", LangEnglish, nil, "timeline")
+	t.Cleanup(func() { w.Finalize(ProgressCardStateCompleted) })
+	w.Handle(Event{Type: EventTaskProgress, TaskProgress: &TaskProgress{
+		Source: "claude_tasks", Steps: []TaskProgressStep{{Title: "Remove me", Status: "in_progress"}},
+	}}, DisplayCfg{})
+	w.Handle(Event{Type: EventTaskProgress, TaskProgress: &TaskProgress{Source: "claude_tasks"}}, DisplayCfg{})
+	payload := lastTimelinePayload(t, p)
+	if len(payload.Steps) != 0 || payload.CurrentStepStartedAt != "" || payload.LatestActivity != "" {
+		t.Fatalf("deleted task left stale business state: %+v", payload)
+	}
+	w.mu.Lock()
+	activeHeartbeat := w.heartbeatTimer != nil
+	w.mu.Unlock()
+	if activeHeartbeat {
+		t.Fatal("empty task list kept its business heartbeat")
+	}
+	w.Finalize(ProgressCardStateCompleted)
+	w.Handle(Event{Type: EventTaskProgress, TaskProgress: &TaskProgress{
+		Source: "claude_tasks", Steps: []TaskProgressStep{{Title: "Late update", Status: "pending"}},
+	}}, DisplayCfg{})
+	if len(lastTimelinePayload(t, p).Steps) != 0 {
+		t.Fatal("late task update reopened a terminal card")
+	}
+}
+
+func TestTimelineProgress_EmptyTodoWriteClearsOnlyAfterSuccess(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failed=%v", failed), func(t *testing.T) {
+			state, p := timelineTestState()
+			w := newTimelineProgressLocked(context.Background(), state, "test:u", "test", LangEnglish, nil, "timeline")
+			t.Cleanup(func() { w.Finalize(ProgressCardStateCompleted) })
+			w.Handle(Event{Type: EventTaskProgress, TaskProgress: &TaskProgress{
+				Source: "test", Steps: []TaskProgressStep{{Title: "Old task", Status: "pending"}},
+			}}, DisplayCfg{})
+			w.Handle(Event{Type: EventToolUse, ToolName: "TodoWrite", ToolInput: `{"todos":[]}`}, DisplayCfg{})
+			if len(lastTimelinePayload(t, p).Steps) != 1 {
+				t.Fatal("empty plan applied before success")
+			}
+			success := !failed
+			w.Handle(Event{Type: EventToolResult, ToolName: "TodoWrite", ToolSuccess: &success}, DisplayCfg{})
+			want := 0
+			if failed {
+				want = 1
+			}
+			if got := len(lastTimelinePayload(t, p).Steps); got != want {
+				t.Fatalf("steps after clear = %d, want %d", got, want)
+			}
+		})
+	}
+}
+
+func TestTimelineProgress_ChildTodoCannotOverwriteParentPlan(t *testing.T) {
+	state, p := timelineTestState()
+	w := newTimelineProgressLocked(context.Background(), state, "test:u", "test", LangEnglish, nil, "timeline")
+	t.Cleanup(func() { w.Finalize(ProgressCardStateCompleted) })
+	w.Handle(Event{Type: EventTaskProgress, TaskProgress: &TaskProgress{
+		Steps: []TaskProgressStep{{Title: "Original", Status: "pending"}},
+	}}, DisplayCfg{})
+	display := DisplayCfg{ToolMessages: true}
+	w.Handle(Event{Type: EventToolUse, ToolName: "TodoWrite", ToolInput: `{"todos":[{"content":"Parent","status":"in_progress"}]}`, Metadata: map[string]any{"tool_use_id": "p"}}, display)
+	w.Handle(Event{Type: EventToolUse, ToolName: "TodoWrite", ToolInput: `{"todos":[{"content":"Child","status":"completed"}]}`, Metadata: map[string]any{"tool_use_id": "c", "parent_tool_use_id": "agent"}}, display)
+	// Claude tool results may have no ToolName and arrive out of order.
+	w.Handle(Event{Type: EventToolResult, Metadata: map[string]any{"tool_use_id": "c", "parent_tool_use_id": "agent"}}, display)
+	if got := lastTimelinePayload(t, p).Steps[0].Title; got != "Original" {
+		t.Fatalf("child result advanced parent plan: %q", got)
+	}
+	w.Handle(Event{Type: EventToolResult, Metadata: map[string]any{"tool_use_id": "p"}}, display)
+	if got := lastTimelinePayload(t, p).Steps[0].Title; got != "Parent" {
+		t.Fatalf("parent result was not matched: %q", got)
+	}
+}
+
+func TestTimelineProgress_BusinessHeartbeatRefreshesAgesWithoutInventingActivity(t *testing.T) {
+	state, p := timelineTestState()
+	w := newTimelineProgressLocked(context.Background(), state, "test:u", "codex", LangEnglish, nil, "timeline")
+	w.interval = 0
+	w.heartbeatInterval = 15 * time.Millisecond
+	w.Handle(Event{Type: EventTaskProgress, TaskProgress: &TaskProgress{
+		Source: "codex_plan",
+		Steps:  []TaskProgressStep{{Title: "Inspect", Status: "in_progress"}},
+	}}, DisplayCfg{})
+	activityAt := lastTimelinePayload(t, p).LastActivityAt
+	time.Sleep(45 * time.Millisecond)
+	if updates := len(p.getPreviewUpdates()); updates < 2 {
+		t.Fatalf("business heartbeat updates = %d, want at least 2", updates)
+	}
+	if got := lastTimelinePayload(t, p).LastActivityAt; got != activityAt {
+		t.Fatalf("heartbeat changed last activity from %q to %q", activityAt, got)
+	}
+	w.Finalize(ProgressCardStateCompleted)
+	writes := len(p.getPreviewOpens()) + len(p.getPreviewUpdates())
+	time.Sleep(35 * time.Millisecond)
+	if got := len(p.getPreviewOpens()) + len(p.getPreviewUpdates()); got != writes {
+		t.Fatalf("sealed business card kept refreshing: before=%d after=%d", writes, got)
+	}
+}
+
 func TestTimelineProgress_BackgroundMarksOnlyLaterEntries(t *testing.T) {
 	state, p := timelineTestState()
 	w := newTimelineProgressLocked(context.Background(), state, "test:u", "claudecode", LangChinese, nil, "timeline")

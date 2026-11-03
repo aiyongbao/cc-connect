@@ -33,14 +33,14 @@ func (w *timelineProgress) scheduleNoProgressNoticeLocked() {
 // waitingForProgressLocked distinguishes the receipt from actual thoughts and
 // tools, including progress that was intentionally hidden by display settings.
 func (w *timelineProgress) waitingForProgressLocked() bool {
-	return w.payload.State == ProgressCardStateRunning && len(w.payload.Items) == 1 && w.payload.Items[0].Kind == ProgressEntryInfo
+	return w.payload.State == ProgressCardStateRunning && len(w.payload.Steps) == 0 && len(w.payload.Items) == 1 && w.payload.Items[0].Kind == ProgressEntryInfo
 }
 
 // finishNoProgressLocked removes the running receipt even when an adapter never
 // emitted progress. The card header supplies the actual terminal state.
 func (w *timelineProgress) finishNoProgressLocked() {
 	w.cancelNoProgressNoticeLocked()
-	if len(w.payload.Items) == 1 && w.payload.Items[0].Kind == ProgressEntryInfo {
+	if len(w.payload.Steps) == 0 && len(w.payload.Items) == 1 && w.payload.Items[0].Kind == ProgressEntryInfo {
 		w.payload.Items[0].Text = NewI18n(Language(w.payload.Lang)).T(MsgTimelineNoProgress)
 	}
 }

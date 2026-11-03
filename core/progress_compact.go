@@ -61,19 +61,26 @@ type ProgressCardEntry struct {
 // ProgressCardPayload carries structured progress entries for platforms that
 // render custom progress cards.
 type ProgressCardPayload struct {
-	Version    int                 `json:"version,omitempty"`
-	Style      string              `json:"style,omitempty"`
-	UpdatedAt  string              `json:"updated_at,omitempty"` // RFC3339 time of the card update attempt; timeline only.
-	TitleDots  int                 `json:"title_dots,omitempty"` // Timeline running-title phase (1–3); advances with successful card writes.
-	TurnID     string              `json:"turn_id,omitempty"`
-	SessionKey string              `json:"session_key,omitempty"`
-	Agent      string              `json:"agent,omitempty"`
-	Lang       string              `json:"lang,omitempty"`
-	State      ProgressCardState   `json:"state,omitempty"`
-	Background bool                `json:"background,omitempty"` // timeline is waiting on background work.
-	Entries    []string            `json:"entries,omitempty"`    // legacy fallback
-	Items      []ProgressCardEntry `json:"items,omitempty"`      // ordered typed events
-	Truncated  bool                `json:"truncated"`
+	Version              int                 `json:"version,omitempty"`
+	Style                string              `json:"style,omitempty"`
+	UpdatedAt            string              `json:"updated_at,omitempty"` // RFC3339 time of the card update attempt; timeline only.
+	StartedAt            string              `json:"started_at,omitempty"`
+	LastActivityAt       string              `json:"last_activity_at,omitempty"`
+	CurrentStepStartedAt string              `json:"current_step_started_at,omitempty"`
+	PlanUpdatedAt        string              `json:"plan_updated_at,omitempty"`
+	TitleDots            int                 `json:"title_dots,omitempty"` // Timeline running-title phase (1–3); advances with successful card writes.
+	TurnID               string              `json:"turn_id,omitempty"`
+	SessionKey           string              `json:"session_key,omitempty"`
+	Agent                string              `json:"agent,omitempty"`
+	Lang                 string              `json:"lang,omitempty"`
+	State                ProgressCardState   `json:"state,omitempty"`
+	Background           bool                `json:"background,omitempty"` // timeline is waiting on background work.
+	PlanSource           string              `json:"plan_source,omitempty"`
+	LatestActivity       string              `json:"latest_activity,omitempty"`
+	Steps                []TaskProgressStep  `json:"steps,omitempty"`
+	Entries              []string            `json:"entries,omitempty"` // legacy fallback
+	Items                []ProgressCardEntry `json:"items,omitempty"`   // ordered typed events
+	Truncated            bool                `json:"truncated"`
 
 	// Timeline thinking updates + tool calls before merging/trimming;
 	// results only change status and do not increment this cumulative count.
@@ -185,7 +192,7 @@ func ParseProgressCardPayload(content string) (*ProgressCardPayload, bool) {
 			})
 		}
 	}
-	if len(items) == 0 && len(legacy) == 0 {
+	if len(items) == 0 && len(legacy) == 0 && len(payload.Steps) == 0 {
 		return nil, false
 	}
 	if payload.State == "" {

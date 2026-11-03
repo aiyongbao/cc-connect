@@ -41,6 +41,97 @@ import (
 	"time"
 )
 
+// CUJ: start planned work, answer a question, then start an unrelated turn.
+// Only the continuation inherits the plan; the paused card stays immutable.
+func TestCUJ_STREAM4_PlanSurvivesUserChoiceWithoutLeakingIntoNextTurn(t *testing.T) {
+	env, p := newTimelineCUJEnv(t, "timeline", "timeline")
+	t.Cleanup(func() { _ = env.engine.Stop() })
+	env.agent.setNextSessionEvents([]Event{
+		{Type: EventTaskProgress, TaskProgress: &TaskProgress{Source: "test", Steps: []TaskProgressStep{{Title: "Implement", Status: "in_progress"}}}},
+		{Type: EventPermissionRequest, ToolName: "AskUserQuestion", RequestID: "q-plan", Questions: []UserQuestion{{Question: "Continue the plan?", Options: []UserQuestionOption{{Label: "Yes"}, {Label: "No"}}}}},
+		{Type: EventToolUse, ToolName: "Bash", ToolInput: "pwd"},
+	}, 0)
+	// User action 1: start work; the plan card is sealed before the question.
+	sendTimelineCUJ(env, p, "start planned work")
+	env.waitFor("question", 2*time.Second, func() bool { return strings.Contains(strings.Join(p.getSent(), "\n"), "Continue the plan?") })
+	before := lastTimelinePayload(t, p)
+	if before.State != ProgressCardStatePaused || len(before.Steps) != 1 {
+		t.Fatalf("plan before choice = %+v", before)
+	}
+	// User action 2: choose; tools continue before another plan update occurs.
+	sendTimelineCUJ(env, p, "1")
+	env.waitFor("continuation card", 2*time.Second, func() bool { return len(p.getPreviewOpens()) == 2 })
+	after := lastTimelinePayload(t, p)
+	if len(after.Steps) != 1 || after.Steps[0] != before.Steps[0] || after.CurrentStepStartedAt != before.CurrentStepStartedAt || after.StartedAt != before.StartedAt || after.TurnID == before.TurnID {
+		t.Fatalf("plan or timing lost after choice: before=%+v after=%+v", before, after)
+	}
+	env.agent.mu.Lock()
+	s := env.agent.sessions[0]
+	env.agent.mu.Unlock()
+	s.events <- Event{Type: EventResult, Content: "planned work paused", Done: true}
+	env.waitFor("turn unlock", 2*time.Second, func() bool { return !env.engine.sessions.GetOrCreateActive("test:jack").Busy() })
+	for _, update := range p.getPreviewUpdates() {
+		payload, ok := ParseProgressCardPayload(update.Content)
+		if ok && payload.TurnID == before.TurnID && payload.State != ProgressCardStatePaused {
+			t.Fatal("continuation mutated the old paused card")
+		}
+	}
+	// User action 3: unrelated next turn must start without the previous plan.
+	s.mu.Lock()
+	s.pendingEvents = []Event{{Type: EventThinking, Content: "unrelated work"}, {Type: EventResult, Content: "unrelated answer", Done: true}}
+	s.mu.Unlock()
+	sendTimelineCUJ(env, p, "next independent request")
+	env.waitFor("next answer", 2*time.Second, func() bool { return strings.Contains(strings.Join(p.getSent(), "\n"), "unrelated answer") })
+	if len(lastTimelinePayload(t, p).Steps) != 0 {
+		t.Fatal("same-turn inheritance leaked the old plan into another turn")
+	}
+}
+
+// CUJ: create tasks, continue in another turn, then remove the task list.
+// Terminal cards preserve unfinished steps; empty new turns leave history alone.
+func TestCUJ_STREAM3_TaskSnapshotsContinueAndClearAcrossTurns(t *testing.T) {
+	env, p := newTimelineCUJEnv(t, "timeline", "timeline")
+	t.Cleanup(func() { _ = env.engine.Stop() })
+	for i, tc := range []struct {
+		prompt string
+		steps  []TaskProgressStep
+	}{
+		{"create tasks", []TaskProgressStep{{Title: "Inspect", Status: "completed"}, {Title: "Implement", Status: "pending"}}},
+		{"continue tasks", []TaskProgressStep{{Title: "Inspect", Status: "completed"}, {Title: "Implement", Status: "in_progress"}}},
+		{"remove tasks", nil},
+	} {
+		events := []Event{
+			{Type: EventTaskProgress, TaskProgress: &TaskProgress{Source: "claude_tasks", Steps: tc.steps}},
+			{Type: EventResult, Content: "answer: " + tc.prompt, Done: true},
+		}
+		if i == 0 {
+			env.agent.setNextSessionEvents(events, 0)
+		} else {
+			env.agent.mu.Lock()
+			s := env.agent.sessions[0]
+			env.agent.mu.Unlock()
+			s.mu.Lock()
+			s.pendingEvents = events
+			s.mu.Unlock()
+		}
+		sendTimelineCUJ(env, p, tc.prompt)
+		env.waitFor("answer and turn unlock", 2*time.Second, func() bool {
+			return strings.Contains(strings.Join(p.getSent(), "\n"), "answer: "+tc.prompt) && !env.engine.sessions.GetOrCreateActive("test:jack").Busy()
+		})
+		if i < 2 {
+			payload := lastTimelinePayload(t, p)
+			if len(payload.Steps) != 2 || payload.Steps[1].Status != tc.steps[1].Status {
+				t.Fatalf("turn changed unfinished task state: %+v", payload)
+			}
+		} else {
+			// A new empty turn needs no card, and must not rewrite history.
+			if len(p.getPreviewOpens()) != 2 {
+				t.Fatal("empty snapshot created a spurious progress card")
+			}
+		}
+	}
+}
+
 // CUJ: submit work during slow startup, queue a follow-up while the agent is
 // working, then check status. Both messages have receipts before either answer;
 // draining the queue must preserve each receipt without adding another one.
@@ -2369,7 +2460,7 @@ type cujStreamingPlatform struct {
 	// received them, so tests can ask for the latest card content across
 	// segments instead of guessing whether it arrived as an open or an update.
 	cardTimeline []string
-	nextHandle     int
+	nextHandle   int
 }
 
 func (p *cujStreamingPlatform) SendPreviewStart(_ context.Context, _ any, content string) (any, error) {

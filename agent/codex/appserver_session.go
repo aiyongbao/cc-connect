@@ -1227,6 +1227,33 @@ func (s *appServerSession) handleNotification(method string, paramsRaw json.RawM
 			s.storeContextUsage(mapAppServerTokenUsage(notif))
 		}
 
+	case "turn/plan/updated":
+		var notif struct {
+			ThreadID    string           `json:"threadId"`
+			Explanation string           `json:"explanation"`
+			Plan        []map[string]any `json:"plan"`
+		}
+		if err := json.Unmarshal(paramsRaw, &notif); err == nil {
+			// App-server also sends notifications for spawned agent threads.
+			// Only this session's plan may replace its public business steps.
+			if notif.ThreadID != "" && notif.ThreadID != s.CurrentSessionID() {
+				return
+			}
+			if notif.Plan == nil {
+				return
+			}
+			rows := make([]any, 0, len(notif.Plan))
+			for _, step := range notif.Plan {
+				rows = append(rows, step)
+			}
+			if progress := core.ParseTaskProgress("codex_plan", map[string]any{
+				"explanation": notif.Explanation,
+				"plan":        rows,
+			}); progress != nil {
+				s.emit(core.Event{Type: core.EventTaskProgress, TaskProgress: progress})
+			}
+		}
+
 	case "error":
 		var notif errorNotification
 		if err := json.Unmarshal(paramsRaw, &notif); err == nil && strings.TrimSpace(notif.Message) != "" {

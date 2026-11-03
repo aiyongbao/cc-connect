@@ -43,6 +43,10 @@ type claudeSession struct {
 	done            chan struct{}
 	alive           atomic.Bool
 
+	// taskProgress is owned by the read loop and retained across turns of this
+	// process. It is separate from background agent/shell task lifecycles.
+	taskProgress claudeTaskTracker
+
 	// activeModel stores the model id reported by the CLI's init event (e.g.
 	// "claude-opus-4-7[1m]"). It may be empty if the init event hasn't
 	// carried a model field yet; callers should fall back to the Agent's
@@ -1248,6 +1252,9 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 		switch contentType {
 		case "tool_use":
 			toolName, _ := item["name"].(string)
+			if raw["parent_tool_use_id"] == nil {
+				cs.taskProgress.track(item)
+			}
 			if toolName == "AskUserQuestion" {
 				continue
 			}
@@ -1259,6 +1266,7 @@ func (cs *claudeSession) handleAssistant(raw map[string]any) {
 			}
 			inputSummary := summarizeInput(toolName, item["input"])
 			evt := core.Event{Type: core.EventToolUse, ToolName: toolName, ToolInput: inputSummary}
+			evt.Metadata = claudeToolMetadata(raw, item, "id")
 			select {
 			case cs.events <- evt:
 			case <-cs.ctx.Done():
@@ -1294,6 +1302,12 @@ func (cs *claudeSession) handleUser(raw map[string]any) {
 	contentArr, ok := msg["content"].([]any)
 	if !ok {
 		return
+	}
+	resultCount := 0
+	for _, block := range contentArr {
+		if item, ok := block.(map[string]any); ok && item["type"] == "tool_result" {
+			resultCount++
+		}
 	}
 	for _, contentItem := range contentArr {
 		item, ok := contentItem.(map[string]any)
@@ -1343,11 +1357,29 @@ func (cs *claudeSession) handleUser(raw map[string]any) {
 				ToolResult:   truncateStr(strings.TrimSpace(result), 500),
 				ToolExitCode: &code,
 				ToolSuccess:  &success,
+				Metadata:     claudeToolMetadata(raw, item, "tool_use_id"),
+			}
+			var progress *core.TaskProgress
+			if raw["parent_tool_use_id"] == nil {
+				// Message-level structured output belongs to the single result
+				// block. Never reuse it across a batch of parallel tool results.
+				var output any
+				if resultCount == 1 {
+					output = raw["tool_use_result"]
+				}
+				evt.ToolName, progress = cs.taskProgress.result(item, output, result, isError)
 			}
 			select {
 			case cs.events <- evt:
 			case <-cs.ctx.Done():
 				return
+			}
+			if progress != nil {
+				select {
+				case cs.events <- core.Event{Type: core.EventTaskProgress, TaskProgress: progress}:
+				case <-cs.ctx.Done():
+					return
+				}
 			}
 		}
 	}

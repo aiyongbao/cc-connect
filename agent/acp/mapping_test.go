@@ -179,6 +179,27 @@ func TestMapSessionUpdate_reasoningChunk(t *testing.T) {
 	}
 }
 
+func TestMapSessionUpdate_planPublishesBusinessSteps(t *testing.T) {
+	params := json.RawMessage(`{
+		"sessionId":"s1",
+		"update":{
+			"sessionUpdate":"plan",
+			"entries":[
+				{"content":"Inspect","status":"completed"},
+				{"content":"Implement","status":"in_progress"},
+				{"content":"Verify","status":"pending"}
+			]
+		}
+	}`)
+	events := mapSessionUpdate("", params)
+	if len(events) != 1 || events[0].Type != core.EventTaskProgress || events[0].TaskProgress == nil {
+		t.Fatalf("events = %#v", events)
+	}
+	if got := events[0].TaskProgress.Steps[1].Title; got != "Implement" {
+		t.Fatalf("middle step = %q", got)
+	}
+}
+
 func TestMapSessionUpdate_toolCall(t *testing.T) {
 	params := json.RawMessage(`{
 		"sessionId": "s1",

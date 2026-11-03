@@ -131,6 +131,71 @@ func TestAppServerSession_HandleThreadTokenUsageUpdatedCachesContextUsage(t *tes
 	}
 }
 
+func TestAppServerSession_HandlePlanUpdatedEmitsBusinessProgress(t *testing.T) {
+	s := &appServerSession{events: make(chan core.Event, 1)}
+	s.threadID.Store("thread-1")
+	raw := json.RawMessage(`{
+		"threadId":"thread-1",
+		"turnId":"turn-1",
+		"explanation":"Starting implementation",
+		"plan":[
+			{"step":"Inspect the card","status":"completed"},
+			{"step":"Implement the visual hierarchy","status":"inProgress"},
+			{"step":"Verify the result","status":"pending"}
+		]
+	}`)
+
+	s.handleNotification("turn/plan/updated", raw)
+	event := <-s.events
+	if event.Type != core.EventTaskProgress || event.TaskProgress == nil {
+		t.Fatalf("event = %#v", event)
+	}
+	if got := event.TaskProgress.Steps[1].Status; got != "in_progress" {
+		t.Fatalf("middle step status = %q", got)
+	}
+	if event.TaskProgress.Explanation != "Starting implementation" {
+		t.Fatalf("explanation = %q", event.TaskProgress.Explanation)
+	}
+}
+
+func TestAppServerSession_ChildPlanCannotReplaceParentProgress(t *testing.T) {
+	s := &appServerSession{events: make(chan core.Event, 2)}
+	s.threadID.Store("parent")
+	s.handleNotification("turn/plan/updated", json.RawMessage(`{"threadId":"child","plan":[{"step":"Child private task","status":"inProgress"}]}`))
+	if len(s.events) != 0 {
+		t.Fatal("child plan leaked into parent progress")
+	}
+	s.handleNotification("turn/plan/updated", json.RawMessage(`{"threadId":"parent","plan":[{"step":"Parent task","status":"pending"}]}`))
+	select {
+	case event := <-s.events:
+		if event.TaskProgress == nil || event.TaskProgress.Steps[0].Title != "Parent task" {
+			t.Fatalf("parent plan = %+v", event)
+		}
+	default:
+		t.Fatal("parent plan was discarded")
+	}
+}
+
+func TestAppServerSession_EmptyPlanClearsButMissingPlanIsIgnored(t *testing.T) {
+	s := &appServerSession{events: make(chan core.Event, 2)}
+	s.threadID.Store("parent")
+	for _, raw := range []string{`{"threadId":"parent"}`, `{"threadId":"parent","plan":null}`} {
+		s.handleNotification("turn/plan/updated", json.RawMessage(raw))
+	}
+	if len(s.events) != 0 {
+		t.Fatal("missing or null plan was published")
+	}
+	s.handleNotification("turn/plan/updated", json.RawMessage(`{"threadId":"parent","plan":[]}`))
+	select {
+	case event := <-s.events:
+		if event.TaskProgress == nil || len(event.TaskProgress.Steps) != 0 {
+			t.Fatalf("empty plan was not published: %+v", event)
+		}
+	default:
+		t.Fatal("explicit empty plan was discarded")
+	}
+}
+
 func TestAppServerSession_FailedTurnEmitsError(t *testing.T) {
 	s := &appServerSession{
 		events:      make(chan core.Event, 2),
@@ -595,17 +660,17 @@ func waitForWrittenJSONLine(t *testing.T, w *lockedWriteCloser) string {
 
 func TestAppServerListenURL(t *testing.T) {
 	cases := map[string]string{
-		"":                       "",
-		"  ":                     "",
-		"stdio://":               "",
-		"stdio":                  "",
-		"ws://127.0.0.1:3845":    "ws://127.0.0.1:3845",
-		"ws://localhost:9000":    "ws://localhost:9000",
-		"ws://127.0.0.1:3845 ":   "ws://127.0.0.1:3845",
-		" stdio ":                 "",
-		" stdio:// ":               "",
-		"STDIO":                    "",
-		"STDIO://":                 "",
+		"":                     "",
+		"  ":                   "",
+		"stdio://":             "",
+		"stdio":                "",
+		"ws://127.0.0.1:3845":  "ws://127.0.0.1:3845",
+		"ws://localhost:9000":  "ws://localhost:9000",
+		"ws://127.0.0.1:3845 ": "ws://127.0.0.1:3845",
+		" stdio ":              "",
+		" stdio:// ":           "",
+		"STDIO":                "",
+		"STDIO://":             "",
 	}
 	for in, want := range cases {
 		if got := appServerListenURL(in); got != want {

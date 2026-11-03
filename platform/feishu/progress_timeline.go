@@ -46,6 +46,9 @@ func buildTimelineCard(payload *core.ProgressCardPayload) string {
 	case core.ProgressCardStateFailed:
 		titleKey, color = core.MsgTimelineFailed, "red"
 	}
+	if payload.State == core.ProgressCardStateCompleted && taskProgressHasOpenSteps(payload.Steps) {
+		titleKey, color = core.MsgTimelineOpenSteps, "orange"
+	}
 	segments := timelineCardSegments(payload, i18n)
 	// 终态若只剩内部占位行（本次执行从未产生思考或工具进度），隐藏过程内容：
 	// 头部的终态标题已表达结果，避免渲染只有占位文本的空“执行过程”面板。
@@ -79,6 +82,9 @@ func buildTimelineCard(payload *core.ProgressCardPayload) string {
 		} else {
 			elements = append(elements, rows...)
 		}
+	}
+	if len(payload.Steps) > 0 {
+		return buildBusinessTimelineCard(payload, i18n, titleKey, color, businessTechnicalElements(payload, i18n))
 	}
 	if payload.State == core.ProgressCardStateCompleted && len(elements) > 0 {
 		// Completed turns already have a separate final reply. Keep the
@@ -128,6 +134,183 @@ func buildTimelineCard(payload *core.ProgressCardPayload) string {
 	return string(b)
 }
 
+// businessTechnicalElements keeps one flat native fold. Nested panels make the
+// business steps look secondary and render inconsistently on older clients.
+func businessTechnicalElements(payload *core.ProgressCardPayload, i18n *core.I18n) []map[string]any {
+	segments := timelineCardSegments(payload, i18n)
+	texts := make([]string, 0, len(payload.Items)+1)
+	for _, segment := range segments {
+		texts = append(texts, segment.texts...)
+	}
+	texts = sanitizeCardMarkdownSegmentsForCard(texts)
+	elements := make([]map[string]any, 0, len(texts))
+	offset := 0
+	for _, segment := range segments {
+		for _, content := range texts[offset : offset+len(segment.texts)] {
+			elements = append(elements, timelineEntryElement(content, segment.kind, segment.muted))
+		}
+		offset += len(segment.texts)
+	}
+	return elements
+}
+
+func buildBusinessTimelineCard(payload *core.ProgressCardPayload, i18n *core.I18n, titleKey core.MsgKey, color string, technical []map[string]any) string {
+	elements := make([]map[string]any, 0, len(payload.Steps)+4)
+	hintShown := false
+	for _, step := range payload.Steps {
+		running := payload.State == core.ProgressCardStateRunning && step.Status == "in_progress"
+		elements = append(elements, businessStepElement(step, running, payload.State, i18n))
+		if running && !hintShown && strings.TrimSpace(payload.LatestActivity) != "" {
+			elements = append(elements, map[string]any{
+				"tag":       "markdown",
+				"content":   "<font color='grey'>· " + escapeBusinessStepMarkdown(payload.LatestActivity) + "</font>",
+				"text_size": "notation",
+				"margin":    "0px 8px 4px 34px",
+			})
+			hintShown = true
+		}
+	}
+
+	if len(technical) > 0 {
+		count := payload.TotalEntries
+		if count == 0 {
+			count = len(payload.Items)
+		}
+		panel := buildProgressPanel(i18n.Tf(core.MsgTimelineTechnicalDetails, count)+" ▸", false, technical)
+		elements = append(elements, panel)
+	}
+
+	if payload.State == core.ProgressCardStateCompleted {
+		_, _, notice := progressStateMeta(payload.State, payload.Lang, payload.Agent)
+		if len(elements) > 0 {
+			elements = append(elements, map[string]any{"tag": "hr"})
+		}
+		elements = append(elements, map[string]any{
+			"tag": "div",
+			"text": map[string]any{
+				"tag": "plain_text", "content": notice,
+				"text_size": "notation", "text_color": "grey",
+			},
+		})
+	}
+
+	if footer := businessTimelineFooter(payload, i18n, time.Now()); footer != "" {
+		elements = append(elements, map[string]any{
+			"tag": "div",
+			"text": map[string]any{
+				"tag": "plain_text", "content": footer,
+				"text_size": "notation", "text_color": "grey",
+			},
+		})
+	}
+
+	card := map[string]any{
+		"schema": "2.0",
+		"config": map[string]any{"wide_screen_mode": true, "update_multi": true},
+		"header": map[string]any{
+			"title":         timelineHeaderTitle(i18n, titleKey, payload.TitleDots),
+			"template":      color,
+			"text_tag_list": timelineHeaderClockTags(payload.UpdatedAt),
+		},
+		"body": map[string]any{"elements": elements, "vertical_spacing": "4px"},
+	}
+	b, _ := json.Marshal(card)
+	return string(b)
+}
+
+func taskProgressHasOpenSteps(steps []core.TaskProgressStep) bool {
+	for _, step := range steps {
+		if step.Status != "completed" {
+			return true
+		}
+	}
+	return false
+}
+
+func businessStepElement(step core.TaskProgressStep, running bool, state core.ProgressCardState, i18n *core.I18n) map[string]any {
+	icon, color, label := "○", "grey", i18n.T(core.MsgTimelineStepPending)
+	title := escapeBusinessStepMarkdown(step.Title)
+	background := "default"
+	switch step.Status {
+	case "completed":
+		icon, color, label = "✓", "green", i18n.T(core.MsgTimelineStepCompleted)
+	case "in_progress":
+		if running {
+			icon, color, label = "◌", "blue", i18n.T(core.MsgTimelineStepRunning)
+			title = "**<font color='blue'>" + title + "</font>**"
+			background = "blue-50"
+		} else {
+			icon, color, label = "!", "orange", i18n.T(core.MsgTimelineStepUnfinished)
+		}
+	default:
+		title = "<font color='grey'>" + title + "</font>"
+	}
+	if step.Status == "pending" && state != core.ProgressCardStateRunning {
+		icon, color, label = "!", "orange", i18n.T(core.MsgTimelineStepUnfinished)
+	}
+
+	return map[string]any{
+		"tag":                "column_set",
+		"flex_mode":          "none",
+		"horizontal_spacing": "8px",
+		"background_style":   background,
+		"columns": []map[string]any{
+			{
+				"tag": "column", "width": "20px", "padding": "0px 0px 0px 6px", "vertical_align": "center",
+				"elements": []map[string]any{{"tag": "markdown", "content": "<font color='" + color + "'>" + icon + "</font>"}},
+			},
+			{
+				"tag": "column", "width": "weighted", "weight": 1, "padding": "6px 0px",
+				"elements": []map[string]any{{"tag": "markdown", "content": title}},
+			},
+			{
+				"tag": "column", "width": "auto", "padding": "0px 8px 0px 0px", "vertical_align": "center",
+				"elements": []map[string]any{{"tag": "markdown", "content": "<font color='" + color + "'>" + label + "</font>", "text_size": "notation"}},
+			},
+		},
+	}
+}
+
+func escapeBusinessStepMarkdown(text string) string {
+	replacer := strings.NewReplacer(
+		"\\", "\\\\", "`", "\\`", "*", "\\*", "_", "\\_",
+		"[", "\\[", "]", "\\]", "<", "&lt;", ">", "&gt;",
+	)
+	return replacer.Replace(strings.TrimSpace(text))
+}
+
+func businessTimelineFooter(payload *core.ProgressCardPayload, i18n *core.I18n, now time.Time) string {
+	parts := make([]string, 0, 3)
+	if elapsed, ok := elapsedSinceTimestamp(payload.StartedAt, now); ok {
+		parts = append(parts, i18n.Tf(core.MsgTimelineElapsed, elapsed))
+	}
+	if payload.State == core.ProgressCardStateRunning {
+		if elapsed, ok := elapsedSinceTimestamp(payload.CurrentStepStartedAt, now); ok {
+			parts = append(parts, i18n.Tf(core.MsgTimelineCurrentStep, elapsed))
+		}
+		if elapsed, ok := elapsedSinceTimestamp(payload.LastActivityAt, now); ok {
+			parts = append(parts, i18n.Tf(core.MsgTimelineRecentActivity, elapsed))
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+func elapsedSinceTimestamp(value string, now time.Time) (string, bool) {
+	stamp, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return "", false
+	}
+	duration := now.Sub(stamp)
+	if duration < 0 {
+		duration = 0
+	}
+	duration = duration.Truncate(time.Second)
+	if duration < time.Second {
+		return "0s", true
+	}
+	return duration.String(), true
+}
+
 // timelineIsTerminalWithoutProgress reports whether a finished payload still
 // carries only the internal placeholder row that finishNoProgressLocked keeps
 // for adapters that never emitted progress events. The header already shows
@@ -139,7 +322,7 @@ func timelineIsTerminalWithoutProgress(payload *core.ProgressCardPayload, i18n *
 	default:
 		return false
 	}
-	return len(payload.Items) == 1 &&
+	return len(payload.Steps) == 0 && len(payload.Items) == 1 &&
 		payload.Items[0].Kind == core.ProgressEntryInfo &&
 		payload.Items[0].Text == i18n.T(core.MsgTimelineNoProgress)
 }
