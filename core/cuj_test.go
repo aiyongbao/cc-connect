@@ -41,6 +41,46 @@ import (
 	"time"
 )
 
+// CUJ: timeline guidance reaches new, queued, and resumed turns while runtime
+// instructions remain absent from the user's visible history and replies.
+func TestCUJ_STREAM5_TimelineGuidanceReachesInitialResumedAndQueuedTurns(t *testing.T) {
+	env, p := newTimelineCUJEnv(t, "timeline", "timeline")
+	t.Cleanup(func() { _ = env.engine.Stop() })
+	env.agent.setNextSessionEvents([]Event{{Type: EventThinking, Content: "working"}}, 0)
+	// User action 1 starts a held turn. Actions 2 and 3 queue follow-up work.
+	sendTimelineCUJ(env, p, "analyze yesterday")
+	env.waitFor("first turn", 2*time.Second, func() bool { return len(p.getPreviewOpens()) == 1 })
+	env.agent.mu.Lock()
+	s := env.agent.sessions[0]
+	env.agent.mu.Unlock()
+	sendTimelineCUJ(env, p, "compare last week")
+	sendTimelineCUJ(env, p, "check missing fees")
+	s.events <- Event{Type: EventResult, Content: "first answer", Done: true}
+	env.waitFor("queued turns finished", 2*time.Second, func() bool {
+		return len(s.getSentPrompts()) == 3 && !env.engine.sessions.GetOrCreateActive("test:jack").Busy()
+	})
+	// User action 4 resumes the existing session after it becomes idle.
+	sendTimelineCUJ(env, p, "hello")
+	env.waitFor("resumed turn finished", 2*time.Second, func() bool {
+		return len(s.getSentPrompts()) == 4 && !env.engine.sessions.GetOrCreateActive("test:jack").Busy()
+	})
+	for _, prompt := range s.getSentPrompts() {
+		if strings.Count(prompt, taskProgressInstructions) != 1 {
+			t.Fatalf("turn missing or duplicating timeline guidance: %q", prompt)
+		}
+	}
+	for _, entry := range env.engine.sessions.GetOrCreateActive("test:jack").GetHistory(0) {
+		if strings.Contains(entry.Content, "[cc-connect task progress instructions]") {
+			t.Fatal("runtime instructions leaked into visible history")
+		}
+	}
+	for _, sent := range p.getSent() {
+		if strings.Contains(sent, "[cc-connect task progress instructions]") {
+			t.Fatal("runtime instructions leaked into platform replies")
+		}
+	}
+}
+
 // CUJ: start planned work, answer a question, then start an unrelated turn.
 // Only the continuation inherits the plan; the paused card stays immutable.
 func TestCUJ_STREAM4_PlanSurvivesUserChoiceWithoutLeakingIntoNextTurn(t *testing.T) {

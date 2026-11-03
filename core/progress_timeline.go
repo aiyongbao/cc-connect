@@ -123,14 +123,7 @@ func (w *timelineProgress) inheritTaskProgress(previous *timelineProgress) {
 // held. No network I/O happens here, so session locks never wait on card creation.
 func newTimelineProgressLocked(ctx context.Context, state *interactiveState, sessionKey string, agent string, lang Language, transform func(string) string, cardMode string) *timelineProgress {
 	state.timeline = nil
-	capability, supported := state.platform.(TimelineProgressSupport)
-	if !supported || !capability.SupportsTimelineProgress() || !progressCardPayloadForTarget(state.platform, state.replyCtx) || (cardMode != progressStyleTimeline && progressStyleForTarget(state.platform, state.replyCtx) != progressStyleTimeline) {
-		return nil
-	}
-	if _, ok := state.platform.(PreviewStarter); !ok {
-		return nil
-	}
-	if _, ok := state.platform.(MessageUpdater); !ok {
+	if !timelineProgressEnabled(state.platform, state.replyCtx, cardMode) {
 		return nil
 	}
 	now := time.Now()
@@ -153,6 +146,16 @@ func newTimelineProgressLocked(ctx context.Context, state *interactiveState, ses
 	}
 	state.timeline = w
 	return w
+}
+
+func timelineProgressEnabled(p Platform, replyCtx any, cardMode string) bool {
+	capability, supported := p.(TimelineProgressSupport)
+	if !supported || !capability.SupportsTimelineProgress() || !progressCardPayloadForTarget(p, replyCtx) || (cardMode != progressStyleTimeline && progressStyleForTarget(p, replyCtx) != progressStyleTimeline) {
+		return false
+	}
+	_, preview := p.(PreviewStarter)
+	_, updater := p.(MessageUpdater)
+	return preview && updater
 }
 
 // Start creates the initial receipt even before agent events.
