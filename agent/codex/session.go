@@ -470,11 +470,19 @@ func (cs *codexSession) handleEvent(raw map[string]any) {
 		cs.contextMu.Unlock()
 		slog.Debug("codexSession: turn started")
 
-	case "item.started":
-		cs.handleItemStarted(raw)
-
-	case "item.completed":
-		cs.handleItemCompleted(raw)
+	case "item.started", "item.updated", "item.completed":
+		if item, ok := raw["item"].(map[string]any); ok && item["type"] == "todo_list" {
+			cs.handleTodoList(item)
+			return
+		}
+		// Updates for other item kinds are partial, not successful tool
+		// results. Keep their existing started/completed behavior.
+		switch eventType {
+		case "item.started":
+			cs.handleItemStarted(raw)
+		case "item.completed":
+			cs.handleItemCompleted(raw)
+		}
 
 	case "turn.completed":
 		cs.markTurnCompleted()
@@ -514,6 +522,44 @@ func (cs *codexSession) handleEvent(raw map[string]any) {
 
 	default:
 		slog.Debug("codexSession: unhandled event type", "type", eventType)
+	}
+}
+
+// exec JSON exposes plan snapshots as todo_list on all three item lifecycle
+// events. Unlike app-server, it only exposes a completed boolean per entry:
+// false cannot distinguish pending from in_progress. Do not invent an active
+// step or mark open entries complete merely because the item/turn has ended.
+func (cs *codexSession) handleTodoList(item map[string]any) {
+	items, ok := item["items"].([]any)
+	if !ok {
+		return
+	}
+	steps := make([]any, 0, len(items))
+	for _, value := range items {
+		row, ok := value.(map[string]any)
+		if !ok {
+			return
+		}
+		text, _ := row["text"].(string)
+		completed, ok := row["completed"].(bool)
+		if !ok || strings.TrimSpace(text) == "" {
+			return
+		}
+		status := "pending"
+		if completed {
+			status = "completed"
+		}
+		steps = append(steps, map[string]any{"title": text, "status": status})
+	}
+	progress := core.ParseTaskProgress("codex_exec", map[string]any{"steps": steps})
+	if progress == nil {
+		return
+	}
+	// A plan is metadata, not a tool invocation: do not flush the final
+	// agent message as thinking when the CLI closes its todo item.
+	select {
+	case cs.events <- core.Event{Type: core.EventTaskProgress, TaskProgress: progress}:
+	case <-cs.ctx.Done():
 	}
 }
 
