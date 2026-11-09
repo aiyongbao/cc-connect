@@ -103,6 +103,9 @@ func TestHandleResultParsesUsage(t *testing.T) {
 	if !evt.Done {
 		t.Errorf("regular result event Done = false, want true")
 	}
+	if final, _ := evt.Metadata["background_final_answer"].(bool); !final {
+		t.Errorf("regular result missing background_final_answer metadata")
+	}
 }
 
 // TestHandleResultCompactionSubtypeIsNotTerminal is a regression test for

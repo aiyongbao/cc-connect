@@ -7514,7 +7514,7 @@ func TestProcessInteractiveEvents_WaitsForPendingBackgroundTasks(t *testing.T) {
 	go func() {
 		defer close(producerDone)
 		agentSession.events <- Event{Type: EventText, Content: "后台任务已启动"}
-		agentSession.events <- Event{Type: EventResult, Content: "阶段性回复", Done: true}
+		agentSession.events <- Event{Type: EventResult, Content: "", Done: true}
 		<-release
 		agentSession.pending.Store(false)
 		agentSession.events <- Event{Type: EventText, Content: "后台任务已完成"}
@@ -7553,6 +7553,40 @@ func TestProcessInteractiveEvents_WaitsForPendingBackgroundTasks(t *testing.T) {
 	}
 }
 
+// A final answer must not be held indefinitely by a stale background marker.
+// Claude can finish a Monitor/background shell task without delivering the
+// matching lifecycle event to the bridge.
+func TestProcessInteractiveEvents_DeliversNonEmptyResultWithStaleBackgroundTask(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	sessionKey := "test:background-task-final-answer"
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	agentSession := &pendingBackgroundTestSession{
+		controllableAgentSession: newControllableSession("background-final-answer"),
+		checked:                  make(chan struct{}),
+	}
+	agentSession.pending.Store(true)
+	state := &interactiveState{agentSession: agentSession, platform: p, replyCtx: "ctx-final-answer"}
+	go func() {
+		agentSession.events <- Event{Type: EventResult, Content: "最终答复", Done: true, Metadata: map[string]any{"background_final_answer": true}}
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m-final-answer", time.Now(), nil, nil, state.replyCtx, 0)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("non-empty final result was held by stale background task")
+	}
+	sent := p.getSent()
+	if len(sent) != 1 || !strings.Contains(sent[0], "最终答复") {
+		t.Fatalf("final reply = %#v, want immediate final response", sent)
+	}
+}
+
 // A provisional result must not seal a timeline segment while Claude Code
 // still has background work. Otherwise the next background thinking/tool event
 // falls through to the platform's configured card writer and creates a second,
@@ -7584,7 +7618,7 @@ func TestProcessInteractiveEvents_PendingBackgroundKeepsTimelineSingleCard(t *te
 	go func() {
 		defer close(producerDone)
 		agentSession.events <- Event{Type: EventThinking, Content: "前台思考"}
-		agentSession.events <- Event{Type: EventResult, Content: "阶段性结果", Done: true}
+		agentSession.events <- Event{Type: EventResult, Content: "", Done: true}
 		<-release
 		agentSession.pending.Store(false)
 		agentSession.events <- Event{Type: EventThinking, Content: "后台任务完成后的思考"}
