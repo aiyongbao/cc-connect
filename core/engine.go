@@ -6430,13 +6430,20 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			// reports that those tasks have finished. Other agents do not opt in
 			// to BackgroundTaskReporter, so their normal EventResult path is
 			// unchanged.
-			if reporter, ok := agentSession.(BackgroundTaskReporter); ok && reporter.HasPendingBackgroundTasks() {
-				timeline.SetBackground(true)
-				slog.Debug("EventResult: waiting for agent background tasks",
-					"session", session.ID,
-					"agent", e.agent.Name(),
-				)
-				continue
+			// Claude marks a non-empty final answer explicitly when a stale
+			// background-task marker remains. Keep the generic capability
+			// contract unchanged for other agents, whose non-empty result may
+			// still be provisional.
+			backgroundFinalAnswer, _ := event.Metadata["background_final_answer"].(bool)
+			if !backgroundFinalAnswer {
+				if reporter, ok := agentSession.(BackgroundTaskReporter); ok && reporter.HasPendingBackgroundTasks() {
+					timeline.SetBackground(true)
+					slog.Debug("EventResult: waiting for agent background tasks",
+						"session", session.ID,
+						"agent", e.agent.Name(),
+					)
+					continue
+				}
 			}
 			// A terminal result is only final after any agent-reported background
 			// tasks have drained. Finalizing the timeline before that check leaves
