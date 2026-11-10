@@ -64,6 +64,11 @@ type claudeSession struct {
 	// backgroundTasks before that result arrives, so the active-task snapshot
 	// alone is not enough to identify the final turn.
 	backgroundTaskResults map[string]struct{}
+	// subagentTasks holds task IDs started inside a subagent (parent_task_id /
+	// owned_by_subagent). Their completion is delivered to that subagent, never
+	// as a main-session task-notification result, so their later
+	// task_notification must not create a run ID the main turn would wait on.
+	subagentTasks map[string]struct{}
 	// lastModelSwitch remembers the last model_refusal_fallback that was
 	// reported, so a fallback the CLI announces twice (provisional, then final)
 	// reaches the user once.
@@ -559,6 +564,7 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 		ctxWindowOverride:     ctxWindowTokens,
 		backgroundTasks:       make(map[string]struct{}),
 		backgroundTaskResults: make(map[string]struct{}),
+		subagentTasks:         make(map[string]struct{}),
 	}
 	cs.setPermissionMode(mode)
 	cs.sessionID.Store(sessionID)
@@ -722,6 +728,9 @@ func (cs *claudeSession) updateBackgroundTaskState(raw map[string]any) {
 	if cs.backgroundTaskResults == nil {
 		cs.backgroundTaskResults = make(map[string]struct{})
 	}
+	if cs.subagentTasks == nil {
+		cs.subagentTasks = make(map[string]struct{})
+	}
 
 	switch subtype {
 	case "background_tasks_changed":
@@ -742,7 +751,14 @@ func (cs *claudeSession) updateBackgroundTaskState(raw map[string]any) {
 			if !ok {
 				continue
 			}
-			if taskID, _ := task["task_id"].(string); taskID != "" {
+			taskID, _ := task["task_id"].(string)
+			if isSubagentOwnedTask(task) {
+				if taskID != "" {
+					cs.subagentTasks[taskID] = struct{}{}
+				}
+				continue
+			}
+			if taskID != "" {
 				next[taskID] = struct{}{}
 			}
 			if runID, _ := task["run_id"].(string); runID != "" {
@@ -754,6 +770,12 @@ func (cs *claudeSession) updateBackgroundTaskState(raw map[string]any) {
 		// Claude uses the same lifecycle vocabulary for some foreground
 		// task plumbing. Only an explicitly backgrounded task may defer the
 		// enclosing turn; ordinary tool calls must retain normal semantics.
+		if isSubagentOwnedTask(raw) {
+			if taskID, _ := raw["task_id"].(string); taskID != "" {
+				cs.subagentTasks[taskID] = struct{}{}
+			}
+			return
+		}
 		if backgrounded, ok := raw["is_backgrounded"].(bool); ok && !backgrounded {
 			return
 		}
@@ -767,7 +789,14 @@ func (cs *claudeSession) updateBackgroundTaskState(raw map[string]any) {
 			cs.backgroundTaskResults[runID] = struct{}{}
 		}
 	case "task_notification":
-		if taskID, _ := raw["task_id"].(string); taskID != "" {
+		taskID, _ := raw["task_id"].(string)
+		if _, nested := cs.subagentTasks[taskID]; nested {
+			// The owning subagent consumes this notification; the main
+			// session never emits a task-notification result for it.
+			delete(cs.subagentTasks, taskID)
+			return
+		}
+		if taskID != "" {
 			delete(cs.backgroundTasks, taskID)
 		}
 		if runID, _ := raw["run_id"].(string); runID != "" {
@@ -776,6 +805,17 @@ func (cs *claudeSession) updateBackgroundTaskState(raw map[string]any) {
 			cs.backgroundTaskResults[runID] = struct{}{}
 		}
 	}
+}
+
+// isSubagentOwnedTask reports whether a task_started payload or a
+// background_tasks_changed entry belongs to a task launched inside a subagent
+// rather than by the main session.
+func isSubagentOwnedTask(task map[string]any) bool {
+	if owned, _ := task["owned_by_subagent"].(bool); owned {
+		return true
+	}
+	parent, _ := task["parent_task_id"].(string)
+	return parent != ""
 }
 
 // markBackgroundLaunch records a run_in_background tool before Claude's
@@ -804,16 +844,30 @@ func taskNotificationRunID(raw map[string]any) (string, bool) {
 	return runID, true
 }
 
-// consumeTaskNotificationResult advances Claude's background-task barrier.
-// The result for the last known run ID is the only task-notification result
-// that may close the foreground turn.
+// consumeTaskNotificationResult advances Claude's background-task barrier and
+// reports whether the turn must stay open. While Claude still lists active
+// tasks, the turn waits for their notification results. Once the snapshot is
+// empty, the remaining run IDs are dropped: Claude merges notifications that
+// queue up during a running turn (and user prompts sent meanwhile) into that
+// turn, so those runs never get a result of their own. Waiting for them left
+// the session busy forever; a genuinely late result is still relayed by the
+// engine's unsolicited reader. Launch markers are kept: they stand for a
+// run_in_background tool whose task has not been reported yet.
 func (cs *claudeSession) consumeTaskNotificationResult(runID string) bool {
 	cs.backgroundTasksMu.Lock()
 	defer cs.backgroundTasksMu.Unlock()
 	if runID != "" {
 		delete(cs.backgroundTaskResults, runID)
 	}
-	return len(cs.backgroundTasks) > 0 || len(cs.backgroundTaskResults) > 0
+	if len(cs.backgroundTasks) > 0 {
+		return true
+	}
+	for key := range cs.backgroundTaskResults {
+		if !strings.HasPrefix(key, backgroundLaunchPrefix) {
+			delete(cs.backgroundTaskResults, key)
+		}
+	}
+	return len(cs.backgroundTaskResults) > 0
 }
 
 // clearBackgroundTaskResultsAfterTerminalSnapshot handles Claude CLI modes
