@@ -851,8 +851,11 @@ func taskNotificationRunID(raw map[string]any) (string, bool) {
 // queue up during a running turn (and user prompts sent meanwhile) into that
 // turn, so those runs never get a result of their own. Waiting for them left
 // the session busy forever; a genuinely late result is still relayed by the
-// engine's unsolicited reader. Launch markers are kept: they stand for a
-// run_in_background tool whose task has not been reported yet.
+// engine's unsolicited reader. Launch markers are dropped too, as for a
+// normal result: Claude reports task_started right after the tool call, long
+// before the model finishes the turn, so a marker still present here belongs
+// to a tool that never started a task (blocked by a hook or failed) and would
+// otherwise hold the turn until the idle timeout.
 func (cs *claudeSession) consumeTaskNotificationResult(runID string) bool {
 	cs.backgroundTasksMu.Lock()
 	defer cs.backgroundTasksMu.Unlock()
@@ -862,12 +865,8 @@ func (cs *claudeSession) consumeTaskNotificationResult(runID string) bool {
 	if len(cs.backgroundTasks) > 0 {
 		return true
 	}
-	for key := range cs.backgroundTaskResults {
-		if !strings.HasPrefix(key, backgroundLaunchPrefix) {
-			delete(cs.backgroundTaskResults, key)
-		}
-	}
-	return len(cs.backgroundTaskResults) > 0
+	clear(cs.backgroundTaskResults)
+	return false
 }
 
 // clearBackgroundTaskResultsAfterTerminalSnapshot handles Claude CLI modes
