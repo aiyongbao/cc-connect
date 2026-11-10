@@ -322,6 +322,57 @@ func TestClaudeSessionBackgroundLaunchPrecedesSystemTaskEvents(t *testing.T) {
 	}
 }
 
+// Tasks started inside an async Agent subagent are reported on the main stream
+// with parent_task_id/owned_by_subagent, but their notification is consumed by
+// the subagent. Tracking them left a run ID that no main-session result ever
+// consumed, so the next task-notification result could never close the turn.
+func TestClaudeSessionIgnoresSubagentOwnedTasks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cs := &claudeSession{events: make(chan core.Event, 8), ctx: ctx}
+
+	cs.handleReadLoopLine(`{"type":"system","subtype":"task_started","task_id":"agent-1","run_id":"run-a","tool_use_id":"tool-a","is_backgrounded":true,"spawn_depth":1,"task_type":"local_agent"}`)
+	cs.handleReadLoopLine(`{"type":"system","subtype":"task_started","task_id":"bash-fg","run_id":"run-fg","owned_by_subagent":true,"is_backgrounded":false,"parent_task_id":"agent-1","task_type":"local_bash"}`)
+	cs.handleReadLoopLine(`{"type":"system","subtype":"task_started","task_id":"bash-bg","run_id":"run-bg","owned_by_subagent":true,"is_backgrounded":true,"parent_task_id":"agent-1","task_type":"local_bash"}`)
+	cs.handleReadLoopLine(`{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"agent-1","run_id":"run-a","task_type":"local_agent"},{"task_id":"bash-bg","run_id":"run-bg","task_type":"local_bash","parent_task_id":"agent-1"}]}`)
+	cs.handleReadLoopLine(`{"type":"system","subtype":"task_notification","task_id":"bash-fg","run_id":"run-fg","status":"completed"}`)
+	cs.handleReadLoopLine(`{"type":"system","subtype":"task_notification","task_id":"bash-bg","run_id":"run-bg","status":"completed"}`)
+	cs.handleReadLoopLine(`{"type":"system","subtype":"task_notification","task_id":"agent-1","run_id":"run-a","status":"completed"}`)
+	cs.handleReadLoopLine(`{"type":"system","subtype":"background_tasks_changed","tasks":[]}`)
+	cs.handleReadLoopLine(`{"type":"result","subtype":"success","origin":{"kind":"task-notification","runId":"run-a"},"num_turns":1,"result":"agent done"}`)
+
+	if evt := <-cs.events; evt.Type != core.EventResult || !evt.Done {
+		t.Fatalf("agent task-notification result = %#v, want Done=true", evt)
+	}
+	if cs.HasPendingBackgroundTasks() {
+		t.Fatal("subagent-owned tasks must not leave pending background state")
+	}
+}
+
+// Claude merges notifications (and user prompts) queued during a running turn
+// into that turn, so a notified run may never get its own result. Once the
+// active task snapshot is empty, the result that does arrive must close the
+// turn; otherwise the session stays busy and later messages queue forever.
+func TestClaudeSessionMergedTaskNotificationsCloseTurn(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cs := &claudeSession{events: make(chan core.Event, 8), ctx: ctx}
+
+	cs.handleReadLoopLine(`{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"task-1","run_id":"run-1"},{"task_id":"task-2","run_id":"run-2"}]}`)
+	cs.handleReadLoopLine(`{"type":"system","subtype":"task_notification","task_id":"task-1","run_id":"run-1","status":"completed"}`)
+	cs.handleReadLoopLine(`{"type":"system","subtype":"task_notification","task_id":"task-2","run_id":"run-2","status":"completed"}`)
+	cs.handleReadLoopLine(`{"type":"system","subtype":"background_tasks_changed","tasks":[]}`)
+	// Only one result: run-2's notification was merged into run-1's turn.
+	cs.handleReadLoopLine(`{"type":"result","subtype":"success","origin":{"kind":"task-notification","runId":"run-1"},"num_turns":2,"result":"both done"}`)
+
+	if evt := <-cs.events; evt.Type != core.EventResult || !evt.Done {
+		t.Fatalf("merged task-notification result = %#v, want Done=true", evt)
+	}
+	if cs.HasPendingBackgroundTasks() {
+		t.Fatal("merged notification run IDs must not stay pending")
+	}
+}
+
 // TestIsCompactionResult covers both accepted subtype spellings and the
 // negative case (regular result with no subtype).
 func TestIsCompactionResult(t *testing.T) {
