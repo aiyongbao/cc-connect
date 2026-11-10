@@ -5386,6 +5386,13 @@ func (e *Engine) runUnsolicitedReader(ctx context.Context, cancel context.Cancel
 				e.relayModelSwitch(p, replyCtx, sessionKey, event.ModelSwitch)
 
 			case EventResult:
+				if backstop, _ := event.Metadata[EventMetaTurnBackstop].(bool); backstop {
+					// The original result already completed this unsolicited
+					// turn and was relayed; the backstop only matters to a
+					// waiting foreground turn.
+					slog.Debug("unsolicited reader: ignoring turn backstop result", "session", sessionKey)
+					continue
+				}
 				fullResponse := event.Content
 				if fullResponse == "" && len(textParts) > 0 {
 					fullResponse = strings.Join(textParts, "")

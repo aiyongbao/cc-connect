@@ -370,6 +370,32 @@ func TestClaudeSessionMergedTaskNotificationsCloseTurn(t *testing.T) {
 	}
 }
 
+// A run_in_background tool that never starts a task (blocked by a hook or
+// failed) leaves only its launch marker. A task-notification result arriving
+// with no active task must still close the turn instead of waiting for a
+// task_started that will never come.
+func TestClaudeSessionStaleLaunchMarkerDoesNotHoldTaskNotificationResult(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cs := &claudeSession{events: make(chan core.Event, 8), ctx: ctx}
+
+	cs.handleReadLoopLine(`{"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"task-1","run_id":"run-1"}]}`)
+	cs.handleReadLoopLine(`{"type":"system","subtype":"task_notification","task_id":"task-1","run_id":"run-1","status":"completed"}`)
+	cs.handleReadLoopLine(`{"type":"system","subtype":"background_tasks_changed","tasks":[]}`)
+	// While handling the notification, Claude calls a background tool that
+	// never reports task_started.
+	cs.handleReadLoopLine(`{"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-blocked","name":"Bash","input":{"command":"sleep 5","run_in_background":true}}]}}`)
+	<-cs.events // consume the corresponding EventToolUse
+	cs.handleReadLoopLine(`{"type":"result","subtype":"success","origin":{"kind":"task-notification","runId":"run-1"},"num_turns":2,"result":"done"}`)
+
+	if evt := <-cs.events; evt.Type != core.EventResult || !evt.Done {
+		t.Fatalf("task-notification result with stale launch marker = %#v, want Done=true", evt)
+	}
+	if cs.HasPendingBackgroundTasks() {
+		t.Fatal("stale launch marker must not leave pending background state")
+	}
+}
+
 // TestIsCompactionResult covers both accepted subtype spellings and the
 // negative case (regular result with no subtype).
 func TestIsCompactionResult(t *testing.T) {

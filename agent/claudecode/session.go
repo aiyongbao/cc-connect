@@ -64,11 +64,23 @@ type claudeSession struct {
 	// backgroundTasks before that result arrives, so the active-task snapshot
 	// alone is not enough to identify the final turn.
 	backgroundTaskResults map[string]struct{}
-	// subagentTasks holds task IDs started inside a subagent (parent_task_id /
-	// owned_by_subagent). Their completion is delivered to that subagent, never
-	// as a main-session task-notification result, so their later
-	// task_notification must not create a run ID the main turn would wait on.
-	subagentTasks map[string]struct{}
+	// untrackedTasks holds task IDs whose task_notification never produces a
+	// main-session result: foreground tasks (their outcome is the tool result)
+	// and tasks owned by a subagent (the subagent consumes the notification).
+	// Their notification must not create a run ID the main turn would wait on.
+	// A subagent's background task still counts as active work, because Claude
+	// wakes the subagent again when it finishes.
+	untrackedTasks map[string]struct{}
+	// stateEvents records that Claude emits session_state_changed. Only then
+	// can a turn wait for results that may never come, because idle
+	// (handleSessionIdle) will close it if they were merged into another turn.
+	stateEvents atomic.Bool
+	// heldMu guards heldResult: the content of the last result that left the
+	// engine's turn open (Done=false, or Done=true while background tasks were
+	// still pending). Nil when no turn is held. Claude's idle state releases it
+	// through handleSessionIdle.
+	heldMu     sync.Mutex
+	heldResult *string
 	// lastModelSwitch remembers the last model_refusal_fallback that was
 	// reported, so a fallback the CLI announces twice (provisional, then final)
 	// reaches the user once.
@@ -139,6 +151,11 @@ type claudeSession struct {
 const backgroundLaunchPrefix = "tool:"
 
 const nativeTaskToolsEnv = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
+
+// sessionStateEventsEnv makes Claude Code emit system/session_state_changed
+// (running, requires_action, idle) on stream-json. cc-connect only uses idle
+// as a backstop for turns its background-task bookkeeping failed to close.
+const sessionStateEventsEnv = "CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS"
 
 // StartupWarning implements core.StartupWarner. Returns a non-empty string
 // when the session was started under degraded conditions that the user should
@@ -451,7 +468,9 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 	// Recent Claude Code versions omit task tools for newer/custom model IDs.
 	// Opt in so native progress can be published; explicit service/project
 	// environment values still win, and tool deny rules remain untouched.
-	env := core.MergeEnv([]string{nativeTaskToolsEnv + "=1"}, filterEnv(os.Environ(), "CLAUDECODE"))
+	// Session state events feed the idle backstop (handleSessionIdle); they are
+	// additive stream events and do not change Claude's behavior.
+	env := core.MergeEnv([]string{nativeTaskToolsEnv + "=1", sessionStateEventsEnv + "=1"}, filterEnv(os.Environ(), "CLAUDECODE"))
 	if len(extraEnv) > 0 {
 		env = core.MergeEnv(env, extraEnv)
 	}
@@ -564,7 +583,7 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 		ctxWindowOverride:     ctxWindowTokens,
 		backgroundTasks:       make(map[string]struct{}),
 		backgroundTaskResults: make(map[string]struct{}),
-		subagentTasks:         make(map[string]struct{}),
+		untrackedTasks:        make(map[string]struct{}),
 	}
 	cs.setPermissionMode(mode)
 	cs.sessionID.Store(sessionID)
@@ -728,8 +747,8 @@ func (cs *claudeSession) updateBackgroundTaskState(raw map[string]any) {
 	if cs.backgroundTaskResults == nil {
 		cs.backgroundTaskResults = make(map[string]struct{})
 	}
-	if cs.subagentTasks == nil {
-		cs.subagentTasks = make(map[string]struct{})
+	if cs.untrackedTasks == nil {
+		cs.untrackedTasks = make(map[string]struct{})
 	}
 
 	switch subtype {
@@ -751,15 +770,22 @@ func (cs *claudeSession) updateBackgroundTaskState(raw map[string]any) {
 			if !ok {
 				continue
 			}
+			// The snapshot only lists background work, including tasks a
+			// subagent left running; all of it keeps the turn open.
 			taskID, _ := task["task_id"].(string)
+			if taskID != "" {
+				next[taskID] = struct{}{}
+			}
 			if isSubagentOwnedTask(task) {
 				if taskID != "" {
-					cs.subagentTasks[taskID] = struct{}{}
+					cs.untrackedTasks[taskID] = struct{}{}
 				}
 				continue
 			}
 			if taskID != "" {
-				next[taskID] = struct{}{}
+				// A foreground task moved to the background reports to the
+				// main session like any other background task.
+				delete(cs.untrackedTasks, taskID)
 			}
 			if runID, _ := task["run_id"].(string); runID != "" {
 				cs.backgroundTaskResults[runID] = struct{}{}
@@ -770,16 +796,20 @@ func (cs *claudeSession) updateBackgroundTaskState(raw map[string]any) {
 		// Claude uses the same lifecycle vocabulary for some foreground
 		// task plumbing. Only an explicitly backgrounded task may defer the
 		// enclosing turn; ordinary tool calls must retain normal semantics.
-		if isSubagentOwnedTask(raw) {
-			if taskID, _ := raw["task_id"].(string); taskID != "" {
-				cs.subagentTasks[taskID] = struct{}{}
+		taskID, _ := raw["task_id"].(string)
+		backgrounded, hasBackgrounded := raw["is_backgrounded"].(bool)
+		if isSubagentOwnedTask(raw) || (hasBackgrounded && !backgrounded) {
+			if taskID != "" {
+				cs.untrackedTasks[taskID] = struct{}{}
+				if backgrounded {
+					// A subagent's background task: active until it finishes,
+					// but its run ID never appears on a main-session result.
+					cs.backgroundTasks[taskID] = struct{}{}
+				}
 			}
 			return
 		}
-		if backgrounded, ok := raw["is_backgrounded"].(bool); ok && !backgrounded {
-			return
-		}
-		if taskID, _ := raw["task_id"].(string); taskID != "" {
+		if taskID != "" {
 			cs.backgroundTasks[taskID] = struct{}{}
 		}
 		if toolUseID, _ := raw["tool_use_id"].(string); toolUseID != "" {
@@ -790,14 +820,13 @@ func (cs *claudeSession) updateBackgroundTaskState(raw map[string]any) {
 		}
 	case "task_notification":
 		taskID, _ := raw["task_id"].(string)
-		if _, nested := cs.subagentTasks[taskID]; nested {
-			// The owning subagent consumes this notification; the main
-			// session never emits a task-notification result for it.
-			delete(cs.subagentTasks, taskID)
-			return
-		}
 		if taskID != "" {
 			delete(cs.backgroundTasks, taskID)
+		}
+		if _, untracked := cs.untrackedTasks[taskID]; untracked {
+			// No main-session task-notification result follows.
+			delete(cs.untrackedTasks, taskID)
+			return
 		}
 		if runID, _ := raw["run_id"].(string); runID != "" {
 			// Keep the run ID until its task-notification result is consumed.
@@ -847,12 +876,10 @@ func taskNotificationRunID(raw map[string]any) (string, bool) {
 // consumeTaskNotificationResult advances Claude's background-task barrier and
 // reports whether the turn must stay open. While Claude still lists active
 // tasks, the turn waits for their notification results. Once the snapshot is
-// empty, the remaining run IDs are dropped: Claude merges notifications that
-// queue up during a running turn (and user prompts sent meanwhile) into that
-// turn, so those runs never get a result of their own. Waiting for them left
-// the session busy forever; a genuinely late result is still relayed by the
-// engine's unsolicited reader. Launch markers are kept: they stand for a
-// run_in_background tool whose task has not been reported yet.
+// empty, notified runs may still be pending for two different reasons: Claude
+// queued their notification behind this turn (a result follows), or merged it
+// into this turn together with any user prompt sent meanwhile (no result ever
+// follows). See releasePendingResultsLocked.
 func (cs *claudeSession) consumeTaskNotificationResult(runID string) bool {
 	cs.backgroundTasksMu.Lock()
 	defer cs.backgroundTasksMu.Unlock()
@@ -862,12 +889,7 @@ func (cs *claudeSession) consumeTaskNotificationResult(runID string) bool {
 	if len(cs.backgroundTasks) > 0 {
 		return true
 	}
-	for key := range cs.backgroundTaskResults {
-		if !strings.HasPrefix(key, backgroundLaunchPrefix) {
-			delete(cs.backgroundTaskResults, key)
-		}
-	}
-	return len(cs.backgroundTaskResults) > 0
+	return cs.releasePendingResultsLocked()
 }
 
 // clearBackgroundTaskResultsAfterTerminalSnapshot handles Claude CLI modes
@@ -877,8 +899,27 @@ func (cs *claudeSession) clearBackgroundTaskResultsAfterTerminalSnapshot() {
 	cs.backgroundTasksMu.Lock()
 	defer cs.backgroundTasksMu.Unlock()
 	if len(cs.backgroundTasks) == 0 {
-		clear(cs.backgroundTaskResults)
+		cs.releasePendingResultsLocked()
 	}
+}
+
+// releasePendingResultsLocked decides what to do with notified runs (and
+// launch markers) once no background task is active, and reports whether the
+// turn stays open. With session state events, they are kept: a queued
+// notification closes the turn with its own result, and a merged one is
+// resolved by Claude's idle report (handleSessionIdle), which only comes once
+// nothing is queued. Without them the two cases are indistinguishable, so the
+// runs are dropped rather than risking a turn that never closes; a late result
+// is then relayed by the engine's unsolicited reader. Launch markers left at
+// this point belong to a tool that never started a task (blocked by a hook or
+// failed): Claude reports task_started right after the tool call, long before
+// the model finishes the turn. Callers hold backgroundTasksMu.
+func (cs *claudeSession) releasePendingResultsLocked() bool {
+	if cs.stateEvents.Load() {
+		return len(cs.backgroundTaskResults) > 0
+	}
+	clear(cs.backgroundTaskResults)
+	return false
 }
 
 // isCompactionResult reports whether a `type:"result"` event is actually
@@ -916,6 +957,19 @@ func resultSubtype(raw map[string]any) string {
 
 func (cs *claudeSession) handleSystem(raw map[string]any) {
 	cs.updateBackgroundTaskState(raw)
+	if subtype, _ := raw["subtype"].(string); subtype == "session_state_changed" {
+		// State changes are bookkeeping only. Unlike other system events they
+		// must not surface as an EventText: idle follows every turn, and the
+		// engine's unsolicited reader would treat it as background activity.
+		cs.stateEvents.Store(true)
+		if sid, ok := raw["session_id"].(string); ok && sid != "" {
+			cs.sessionID.Store(sid)
+		}
+		if state, _ := raw["state"].(string); state == "idle" {
+			cs.handleSessionIdle()
+		}
+		return
+	}
 	if model, ok := raw["model"].(string); ok && model != "" {
 		cs.activeModel.Store(model)
 	}
@@ -1582,10 +1636,66 @@ func (cs *claudeSession) handleResult(raw map[string]any) {
 		CacheCreationInputTokens: cacheCreationTokens,
 		CacheReadInputTokens:     cacheReadTokens,
 	}
+	if !isCompaction {
+		cs.recordHeldResult(content, done)
+	}
 	select {
 	case cs.events <- evt:
 	case <-cs.ctx.Done():
 		return
+	}
+}
+
+// recordHeldResult remembers whether this result leaves the engine's turn open.
+// The engine keeps waiting after a Done=false result and after a Done=true
+// result while HasPendingBackgroundTasks reports work; both are released by the
+// next closing result or, failing that, by handleSessionIdle.
+func (cs *claudeSession) recordHeldResult(content string, done bool) {
+	held := !done || cs.HasPendingBackgroundTasks()
+	cs.heldMu.Lock()
+	defer cs.heldMu.Unlock()
+	if held {
+		cs.heldResult = &content
+	} else {
+		cs.heldResult = nil
+	}
+}
+
+// handleSessionIdle closes a turn left open by stale background bookkeeping.
+// Claude reports idle after its last result, once no turn is running and no
+// input is queued. It also reports idle while a background shell keeps
+// running, so active tasks still hold the turn as before; only when the task
+// snapshot is empty are the remaining run IDs and launch markers stale (for
+// example a dropped empty task-notification result). The held result is then
+// re-sent as a closing EventResult tagged core.EventMetaTurnBackstop.
+func (cs *claudeSession) handleSessionIdle() {
+	cs.backgroundTasksMu.Lock()
+	if len(cs.backgroundTasks) > 0 {
+		cs.backgroundTasksMu.Unlock()
+		return
+	}
+	clear(cs.backgroundTaskResults)
+	cs.backgroundTasksMu.Unlock()
+
+	cs.heldMu.Lock()
+	held := cs.heldResult
+	cs.heldResult = nil
+	cs.heldMu.Unlock()
+	if held == nil {
+		return
+	}
+	slog.Warn("claudeSession: Claude is idle but the turn is still open; closing it",
+		"session_id", cs.CurrentSessionID(), "response_len", len(*held))
+	evt := core.Event{
+		Type:      core.EventResult,
+		Content:   *held,
+		SessionID: cs.CurrentSessionID(),
+		Done:      true,
+		Metadata:  map[string]any{core.EventMetaTurnBackstop: true},
+	}
+	select {
+	case cs.events <- evt:
+	case <-cs.ctx.Done():
 	}
 }
 
