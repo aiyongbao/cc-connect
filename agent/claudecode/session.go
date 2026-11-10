@@ -1559,7 +1559,6 @@ func (cs *claudeSession) handleResult(raw map[string]any) {
 	cs.usageMu.Unlock()
 
 	done := !isCompaction
-	backgroundFinalAnswer := false
 	if done {
 		if runID, ok := taskNotificationRunID(raw); ok {
 			// Each background task may produce its own task-notification
@@ -1570,9 +1569,6 @@ func (cs *claudeSession) handleResult(raw map[string]any) {
 			// background task snapshot is empty instead of tagging it as a
 			// task-notification result.
 			cs.clearBackgroundTaskResultsAfterTerminalSnapshot()
-			// A normal result with content is the main model's final answer.
-			// Task-notification results have a distinct origin and remain gated.
-			backgroundFinalAnswer = content != ""
 		}
 	}
 
@@ -1585,9 +1581,6 @@ func (cs *claudeSession) handleResult(raw map[string]any) {
 		OutputTokens:             outputTokens,
 		CacheCreationInputTokens: cacheCreationTokens,
 		CacheReadInputTokens:     cacheReadTokens,
-	}
-	if backgroundFinalAnswer {
-		evt.Metadata = map[string]any{"background_final_answer": true}
 	}
 	select {
 	case cs.events <- evt:
