@@ -540,6 +540,7 @@ type ProjectConfig struct {
 	// the existing agent/session teardown behavior.
 	ShutdownInterruptionNotice *bool        `toml:"shutdown_interruption_notice,omitempty"`
 	InjectSender               *bool        `toml:"inject_sender,omitempty"`     // prepend sender identity (platform + user ID) to each message sent to the agent
+	ImageInput                 string       `toml:"image_input,omitempty"`       // "attach" (default): pass user images to the agent; "path": save them to disk and list the paths in the prompt instead
 	DisabledCommands           []string     `toml:"disabled_commands,omitempty"` // commands to disable for this project (e.g. ["restart", "upgrade"])
 	AdminFrom                  string       `toml:"admin_from,omitempty"`        // comma-separated user IDs allowed to run privileged commands; "*" = all allowed users
 	Users                      *UsersConfig `toml:"users,omitempty"`             // per-user role config; nil = legacy behavior
@@ -1160,6 +1161,11 @@ func (c *Config) validateInternal(permissive bool) error {
 		}
 		if err := validateDisplayConfig(prefix+".display", proj.Display); err != nil {
 			return err
+		}
+		switch proj.ImageInput {
+		case "", "attach", "path":
+		default:
+			return fmt.Errorf("config: %s.image_input must be \"attach\" or \"path\"", prefix)
 		}
 	}
 	return nil

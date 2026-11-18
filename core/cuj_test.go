@@ -1440,6 +1440,93 @@ func TestCUJ_A3_ImageReachesAgent(t *testing.T) {
 	}
 }
 
+type workDirCUJAgent struct {
+	*cujAgent
+	dir string
+}
+
+func (a *workDirCUJAgent) GetWorkDir() string { return a.dir }
+
+// CUJ-A3b · With image_input = "path", a post carrying several images must not
+// put image bytes into the agent request (a model gateway rejected such a
+// request with 413 and the session stayed broken). The user sends text with
+// two images, then an image alone, then text alone: every turn gets a reply,
+// the agent receives no image attachments, and the prompt lists files that
+// hold the original bytes.
+func TestCUJ_A3b_ImageInputPathKeepsImagesOutOfRequest(t *testing.T) {
+	dir := t.TempDir()
+	plat := &stubPlatformEngine{n: "test"}
+	agent := &workDirCUJAgent{cujAgent: &cujAgent{}, dir: dir}
+	engine := NewEngine("test", agent, []Platform{plat}, filepath.Join(dir, "sessions.json"), LangEnglish)
+	engine.SetImageInput("path")
+	t.Cleanup(func() { _ = engine.Stop() })
+	env := &cujEnv{t: t, engine: engine, plat: plat, agent: agent.cujAgent, tempDir: dir}
+
+	turns := []struct {
+		content string
+		images  []ImageAttachment
+	}{
+		{
+			content: "original video, product and evidence",
+			images: []ImageAttachment{
+				{MimeType: "image/png", Data: []byte("\x89PNG evidence one"), FileName: "evidence.png"},
+				{MimeType: "image/jpeg", Data: []byte("\xff\xd8 evidence two")},
+			},
+		},
+		{images: []ImageAttachment{{MimeType: "image/webp", Data: []byte("RIFF more evidence")}}},
+		{content: "that's all"},
+	}
+	for i, turn := range turns {
+		engine.ReceiveMessage(plat, &Message{
+			SessionKey: "test:imgpath", Platform: "test", MessageID: fmt.Sprintf("om_%d", i+1),
+			UserID: "u", UserName: "u", Content: turn.content, Images: turn.images, ReplyCtx: "ctx",
+		})
+		env.waitFor(fmt.Sprintf("reply to turn %d", i+1), 2*time.Second, func() bool {
+			count := 0
+			for _, reply := range plat.getSent() {
+				if reply == "ok" {
+					count++
+				}
+			}
+			return count >= i+1
+		})
+		agent.mu.Lock()
+		sess := agent.sessions[0]
+		agent.mu.Unlock()
+		if sent := sess.getSentImages(); len(sent) != i+1 || len(sent[i]) != 0 {
+			t.Fatalf("turn %d: agent image attachments = %#v, want none", i+1, sent)
+		}
+		prompt := sess.getSentPrompts()[i]
+		if len(turn.images) == 0 {
+			if strings.Contains(prompt, ".cc-connect") {
+				t.Fatalf("turn %d: text-only prompt mentions saved images: %q", i+1, prompt)
+			}
+			continue
+		}
+		if turn.content != "" && !strings.Contains(prompt, turn.content) {
+			t.Fatalf("turn %d: prompt lost the user text: %q", i+1, prompt)
+		}
+		if !strings.Contains(prompt, fmt.Sprintf("%d image(s)", len(turn.images))) {
+			t.Fatalf("turn %d: prompt does not mention the images: %q", i+1, prompt)
+		}
+		saved := filepath.Join(dir, ".cc-connect", "attachments", fmt.Sprintf("om_%d", i+1))
+		for j, img := range turn.images {
+			name := img.FileName
+			if name == "" {
+				name = fmt.Sprintf("image_%d%s", j+1, ExtFromMime(img.MimeType))
+			}
+			path := filepath.Join(saved, name)
+			if !strings.Contains(prompt, path) {
+				t.Fatalf("turn %d: prompt does not list %s: %q", i+1, path, prompt)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(data, img.Data) {
+				t.Fatalf("turn %d image %d: saved bytes = %q (%v), want %q", i+1, j+1, data, err, img.Data)
+			}
+		}
+	}
+}
+
 // CUJ-A4 · User sends voice → without STT configured, user gets a clear
 // "voice not enabled" message (the actual STT branch is covered by
 // platform-specific tests).

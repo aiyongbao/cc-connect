@@ -385,6 +385,21 @@ func AppendImageRefs(prompt string, imagePaths []string) string {
 	return prompt + "\n\n(The user attached image(s), saved locally — read the file(s) to view them: " + strings.Join(abs, ", ") + ")"
 }
 
+// AppendSavedImageNote tells the agent that the user's images were saved to
+// disk instead of being attached (image_input = "path"). Unlike
+// AppendImageRefs it does not ask the agent to open them: tools and scripts can
+// use the files directly, and the agent views one only when it needs to.
+func AppendSavedImageNote(prompt string, imagePaths []string) string {
+	if len(imagePaths) == 0 {
+		return prompt
+	}
+	if prompt == "" {
+		prompt = "The user sent image(s)."
+	}
+	return fmt.Sprintf("%s\n\n(The user sent %d image(s); they are saved locally and NOT attached to this message: %s. Open one only if you need to see its content.)",
+		prompt, len(imagePaths), strings.Join(imagePaths, ", "))
+}
+
 // AudioAttachment represents a voice/audio message sent by the user.
 type AudioAttachment struct {
 	MimeType string // e.g. "audio/amr", "audio/ogg", "audio/mp4"
