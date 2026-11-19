@@ -29,21 +29,24 @@ import (
 // In "auto" mode, permission requests are auto-approved internally
 // (avoiding --dangerously-skip-permissions which fails under root).
 type claudeSession struct {
-	planGuard       *planguard.Guard
-	cmd             *exec.Cmd
-	stdin           io.WriteCloser
-	stdinMu         sync.Mutex
-	events          chan core.Event
-	sessionID       atomic.Value // stores string
-	permissionMode  atomic.Value // stores string
-	autoApprove     atomic.Bool
-	acceptEditsOnly atomic.Bool
-	dontAsk         atomic.Bool
-	workDir         string
-	ctx             context.Context
-	cancel          context.CancelFunc
-	done            chan struct{}
-	alive           atomic.Bool
+	planGuard        *planguard.Guard
+	planningMu       sync.Mutex
+	planningSequence uint64
+	planningWaiters  map[string]chan error
+	cmd              *exec.Cmd
+	stdin            io.WriteCloser
+	stdinMu          sync.Mutex
+	events           chan core.Event
+	sessionID        atomic.Value // stores string
+	permissionMode   atomic.Value // stores string
+	autoApprove      atomic.Bool
+	acceptEditsOnly  atomic.Bool
+	dontAsk          atomic.Bool
+	workDir          string
+	ctx              context.Context
+	cancel           context.CancelFunc
+	done             chan struct{}
+	alive            atomic.Bool
 
 	// taskProgress is owned by the read loop and retained across turns of this
 	// process. It is separate from background agent/shell task lifecycles.
@@ -167,6 +170,9 @@ const nativeTaskToolsEnv = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
 
 func (cs *claudeSession) BusinessPlanBlocked() bool    { return cs.planGuard.Blocked() }
 func (cs *claudeSession) BusinessPlanningScoped() bool { return cs.planGuard != nil }
+func (cs *claudeSession) NeedsSessionRefresh() bool {
+	return cs.planGuard != nil && cs.planGuard.SettingsSourceChanged()
+}
 
 // sessionStateEventsEnv makes Claude Code emit system/session_state_changed
 // (running, requires_action, idle) on stream-json. cc-connect only uses idle
@@ -370,7 +376,13 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 		"--permission-prompt-tool", "stdio",
 	}
 	if planGuard != nil {
-		innerArgs = append(innerArgs, planGuard.ClaudeArgs()...)
+		clean, prepared, err := preparePlanningArgs(planGuard, workDir, extraEnv, cliExtraArgs)
+		if err != nil {
+			cancel()
+			return nil, &core.BusinessPlanSetupError{Err: err}
+		}
+		cliExtraArgs = clean
+		innerArgs = append(innerArgs, prepared...)
 	}
 	if !disableVerbose {
 		innerArgs = append(innerArgs, "--verbose")
@@ -1848,6 +1860,9 @@ func (cs *claudeSession) Send(prompt string, messageID string, images []core.Ima
 		return &core.BusinessPlanSetupError{Err: fmt.Errorf("timeline request requires a guarded agent session")}
 	}
 	if cs.planGuard != nil {
+		if err := cs.verifyPlanningSettings(); err != nil {
+			return err
+		}
 		if err := cs.planGuard.Begin(prompt); err != nil {
 			return err
 		}
@@ -2096,6 +2111,9 @@ func (cs *claudeSession) updateActiveModel(model string) {
 // error text and other untrusted fields may contain credentials; never log
 // them, including for unsupported requests or changed protocol envelopes.
 func (cs *claudeSession) handleControlResponse(raw map[string]any) {
+	if cs.handlePlanningSettings(raw) {
+		return
+	}
 	resp, _ := raw["response"].(map[string]any)
 	cs.effortMu.Lock()
 	defer cs.effortMu.Unlock()

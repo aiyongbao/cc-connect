@@ -402,6 +402,12 @@ type BusinessPlanBlockReporter interface {
 	BusinessPlanBlocked() bool
 }
 
+// SessionRefreshReporter requests a safe reconnect at a turn boundary when
+// immutable transport settings changed. Preserve the native conversation ID.
+type SessionRefreshReporter interface {
+	NeedsSessionRefresh() bool
+}
+
 // BusinessPlanScopeReporter lets live display changes recycle a transport
 // before a timeline request could reuse an unguarded legacy CLI process.
 type BusinessPlanScopeReporter interface {

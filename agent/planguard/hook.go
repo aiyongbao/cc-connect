@@ -33,6 +33,11 @@ func RunHook(path string, input io.Reader, output io.Writer) error {
 		if !s.Enabled {
 			return nil
 		}
+		if err := checkHookPolicyState(s); err != nil {
+			s.Ready, s.Blocked = false, true
+			reason = err.Error()
+			return nil
+		}
 		name := planningTool(in.Tool)
 		if in.Event == "PreToolUse" && in.AgentID != "" && ownPlanningTool(in.Tool) {
 			reason = "Only the main session may publish the user's business plan. Report your progress to the main session."

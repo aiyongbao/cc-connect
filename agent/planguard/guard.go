@@ -20,16 +20,19 @@ import (
 const ServerName = "cc_connect_plan"
 
 type state struct {
-	Enabled   bool                             `json:"enabled"`
-	Ready     bool                             `json:"ready"`
-	Blocked   bool                             `json:"blocked"`
-	Attempted bool                             `json:"attempted"`
-	Revision  uint64                           `json:"revision"`
-	Turn      uint64                           `json:"turn"`
-	Tasks     map[string]core.TaskProgressStep `json:"tasks,omitempty"`
-	Order     []string                         `json:"order,omitempty"`
-	Plan      *core.TaskProgress               `json:"plan,omitempty"`
-	Pending   map[string]pendingCall           `json:"pending,omitempty"`
+	SettingsSource  string                           `json:"settings_source,omitempty"`
+	SettingsHash    string                           `json:"settings_hash,omitempty"`
+	HookPolicyFiles []string                         `json:"hook_policy_files,omitempty"`
+	Enabled         bool                             `json:"enabled"`
+	Ready           bool                             `json:"ready"`
+	Blocked         bool                             `json:"blocked"`
+	Attempted       bool                             `json:"attempted"`
+	Revision        uint64                           `json:"revision"`
+	Turn            uint64                           `json:"turn"`
+	Tasks           map[string]core.TaskProgressStep `json:"tasks,omitempty"`
+	Order           []string                         `json:"order,omitempty"`
+	Plan            *core.TaskProgress               `json:"plan,omitempty"`
+	Pending         map[string]pendingCall           `json:"pending,omitempty"`
 }
 
 type pendingCall struct {

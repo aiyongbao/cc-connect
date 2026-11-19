@@ -220,6 +220,11 @@ func TestSession_LateUnlockDropped(t *testing.T) {
 	if !ok {
 		t.Fatal("first TryLock should succeed")
 	}
+	// Consecutive clock reads may have identical values on coarse clocks.
+	// Set a known elapsed duration instead of depending on clock resolution.
+	s.mu.Lock()
+	s.busySince = time.Now().Add(-time.Second)
+	s.mu.Unlock()
 	if _, broken := s.BreakStaleLock(0); !broken {
 		t.Fatal("BreakStaleLock(0) should break the held lock")
 	}
@@ -250,6 +255,11 @@ func TestSession_BreakStaleLockThreshold(t *testing.T) {
 	if _, broken := s.BreakStaleLock(time.Hour); broken {
 		t.Fatal("lock held shorter than maxHeld must not break")
 	}
+	// Consecutive clock reads may have identical values on coarse clocks.
+	// Set a known elapsed duration instead of depending on clock resolution.
+	s.mu.Lock()
+	s.busySince = time.Now().Add(-time.Second)
+	s.mu.Unlock()
 	if _, broken := s.BreakStaleLock(0); !broken {
 		t.Fatal("lock held longer than maxHeld should break")
 	}
