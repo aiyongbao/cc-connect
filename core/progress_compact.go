@@ -61,6 +61,7 @@ type ProgressCardEntry struct {
 // ProgressCardPayload carries structured progress entries for platforms that
 // render custom progress cards.
 type ProgressCardPayload struct {
+	BusinessOnly         bool                `json:"business_only,omitempty"`
 	Version              int                 `json:"version,omitempty"`
 	Style                string              `json:"style,omitempty"`
 	UpdatedAt            string              `json:"updated_at,omitempty"` // RFC3339 time of the card update attempt; timeline only.

@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/chenhg5/cc-connect/agent/planguard"
 	"github.com/chenhg5/cc-connect/core"
 )
 
@@ -154,6 +155,8 @@ type appServerRequestUserInputAnswer struct {
 
 // appServerSession owns the stdio JSON-RPC transport and the active thread state.
 type appServerSession struct {
+	planGuard         *planguard.Guard
+	planArgs          []string
 	cliBin            string
 	cliExtraArgs      []string
 	url               string
@@ -236,8 +239,30 @@ func newAppServerSession(ctx context.Context, cliBin string, cliExtraArgs []stri
 		preambleSent:      resumeID != "" && resumeID != core.ContinueSession,
 	}
 	s.alive.Store(true)
+	if core.BusinessPlanningEnabled(ctx) {
+		guard, err := planguard.New()
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		s.planGuard = guard
+		bin, err := resolveCodexExecutable(cliBin)
+		env := append([]string(nil), extraEnv...)
+		if codexHome != "" {
+			env = append(env, "CODEX_HOME="+codexHome)
+		}
+		if err == nil {
+			s.planArgs, err = guard.PrepareCodex(ctx, bin, cliExtraArgs, workDir, core.MergeEnv(os.Environ(), env))
+		}
+		if err != nil {
+			guard.Close()
+			cancel()
+			return nil, err
+		}
+	}
 
 	if err := s.connect(); err != nil {
+		s.planGuard.Close()
 		cancel()
 		return nil, err
 	}
@@ -274,6 +299,7 @@ func appServerListenURL(url string) string {
 
 func (s *appServerSession) connect() error {
 	args := []string{"app-server"}
+	args = append(append([]string{}, s.planArgs...), args...)
 	// With url "stdio://" the session speaks JSON-RPC over the stdio pipes.
 	// Pass no --listen flag in that case: on codex 0.152+ a --listen value
 	// (including ws://) switches the app-server to serve the protocol over
@@ -515,7 +541,18 @@ func (s *appServerSession) storeContextUsage(usage *core.ContextUsage) {
 	s.context = cloneContextUsage(usage)
 }
 
+func (s *appServerSession) BusinessPlanBlocked() bool    { return s.planGuard.Blocked() }
+func (s *appServerSession) BusinessPlanningScoped() bool { return s.planGuard != nil }
+
 func (s *appServerSession) Send(prompt string, messageID string, images []core.ImageAttachment, files []core.FileAttachment) error {
+	if core.BusinessPlanRequested(prompt) && s.planGuard == nil {
+		return &core.BusinessPlanSetupError{Err: fmt.Errorf("timeline request requires a guarded agent session")}
+	}
+	if s.planGuard != nil {
+		if err := s.planGuard.Begin(prompt); err != nil {
+			return err
+		}
+	}
 	if !s.alive.Load() {
 		return fmt.Errorf("session is closed")
 	}
@@ -1097,6 +1134,7 @@ func (s *appServerSession) Alive() bool {
 }
 
 func (s *appServerSession) Close() error {
+	defer s.planGuard.Close()
 	s.alive.Store(false)
 	s.cancel()
 
@@ -1265,6 +1303,9 @@ func (s *appServerSession) handleResponse(resp rpcResponseEnvelope) {
 }
 
 func (s *appServerSession) handleNotification(method string, paramsRaw json.RawMessage) {
+	if progress := s.planGuard.Progress(); progress != nil {
+		s.emit(core.Event{Type: core.EventTaskProgress, TaskProgress: progress})
+	}
 	switch method {
 	case "turn/started":
 		var notif turnNotification
@@ -1818,8 +1859,8 @@ func (s *appServerSession) emit(event core.Event) {
 		return
 	default:
 	}
-	if event.Type == core.EventResult || event.Type == core.EventError || event.Done {
-		// Preserve FIFO and terminal delivery. Close cancels this wait before
+	if event.Type == core.EventTaskProgress || event.Type == core.EventResult || event.Type == core.EventError || event.Done {
+		// Preserve FIFO, confirmed plans and terminal delivery. Close cancels this wait before
 		// taking eventsMu to close the channel.
 		select {
 		case s.events <- event:

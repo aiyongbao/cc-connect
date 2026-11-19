@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chenhg5/cc-connect/agent/planguard"
 	"github.com/chenhg5/cc-connect/core"
 )
 
@@ -28,6 +29,7 @@ import (
 // In "auto" mode, permission requests are auto-approved internally
 // (avoiding --dangerously-skip-permissions which fails under root).
 type claudeSession struct {
+	planGuard       *planguard.Guard
 	cmd             *exec.Cmd
 	stdin           io.WriteCloser
 	stdinMu         sync.Mutex
@@ -162,6 +164,9 @@ type claudeSession struct {
 const backgroundLaunchPrefix = "tool:"
 
 const nativeTaskToolsEnv = "CLAUDE_CODE_ENABLE_TODO_TOOLS"
+
+func (cs *claudeSession) BusinessPlanBlocked() bool    { return cs.planGuard.Blocked() }
+func (cs *claudeSession) BusinessPlanningScoped() bool { return cs.planGuard != nil }
 
 // sessionStateEventsEnv makes Claude Code emit system/session_state_changed
 // (running, requires_action, idle) on stream-json. cc-connect only uses idle
@@ -312,6 +317,32 @@ func buildAppendSystemPrompt(agentPrompt, platformPrompt, userAppend string) str
 
 func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs []string, cmdArgsFlag string, model, effort, sessionID, mode, systemPrompt, appendSystemPrompt string, allowedTools, disallowedTools []string, pluginDirs []string, extraEnv []string, platformPrompt string, disableVerbose bool, spawnOpts core.SpawnOptions, maxContextTokens int, ctxWindowTokens int, ccDataDir string, lang core.Language) (*claudeSession, error) {
 	sessionCtx, cancel := context.WithCancel(ctx)
+	var planGuard *planguard.Guard
+	if core.BusinessPlanningEnabled(ctx) {
+		// A different OS user cannot access the private guard state, and its
+		// effective hook policy is not the supervisor's policy. Refuse rather
+		// than silently running an unguarded business task under that user.
+		if spawnOpts.IsolationMode() {
+			cancel()
+			return nil, &core.BusinessPlanSetupError{Err: fmt.Errorf("business planning is not yet supported with run_as_user isolation")}
+		}
+		if err := checkBusinessPlanningHooks(workDir, extraEnv, cliExtraArgs); err != nil {
+			cancel()
+			return nil, &core.BusinessPlanSetupError{Err: err}
+		}
+		var err error
+		planGuard, err = planguard.New()
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+	}
+	keepGuard := false
+	defer func() {
+		if !keepGuard {
+			planGuard.Close()
+		}
+	}()
 
 	// Claude Code rejects bypassPermissions when running as root.
 	// Downgrade to "auto" which auto-approves internally in cc-connect.
@@ -337,6 +368,9 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 		"--output-format", "stream-json",
 		"--input-format", "stream-json",
 		"--permission-prompt-tool", "stdio",
+	}
+	if planGuard != nil {
+		innerArgs = append(innerArgs, planGuard.ClaudeArgs()...)
 	}
 	if !disableVerbose {
 		innerArgs = append(innerArgs, "--verbose")
@@ -597,6 +631,8 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 		untrackedTasks:        make(map[string]struct{}),
 		configuredEffort:      effort,
 	}
+	cs.planGuard = planGuard
+	keepGuard = true
 	cs.setPermissionMode(mode)
 	cs.sessionID.Store(sessionID)
 	cs.alive.Store(true)
@@ -700,6 +736,13 @@ func (cs *claudeSession) handleReadLoopScanErr(err error, waitDone <-chan struct
 }
 
 func (cs *claudeSession) handleReadLoopLine(line string) {
+	if progress := cs.planGuard.Progress(); progress != nil {
+		select {
+		case cs.events <- core.Event{Type: core.EventTaskProgress, TaskProgress: progress}:
+		case <-cs.ctx.Done():
+			return
+		}
+	}
 	if line == "" {
 		return
 	}
@@ -1502,7 +1545,7 @@ func (cs *claudeSession) handleUser(raw map[string]any) {
 			case <-cs.ctx.Done():
 				return
 			}
-			if progress != nil {
+			if progress != nil && !cs.planGuard.Enabled() {
 				select {
 				case cs.events <- core.Event{Type: core.EventTaskProgress, TaskProgress: progress}:
 				case <-cs.ctx.Done():
@@ -1801,6 +1844,14 @@ func (cs *claudeSession) handleControlRequest(raw map[string]any) {
 // Files are saved to local temp files and referenced in the text prompt
 // so Claude Code can read them with its built-in tools.
 func (cs *claudeSession) Send(prompt string, messageID string, images []core.ImageAttachment, files []core.FileAttachment) error {
+	if core.BusinessPlanRequested(prompt) && cs.planGuard == nil {
+		return &core.BusinessPlanSetupError{Err: fmt.Errorf("timeline request requires a guarded agent session")}
+	}
+	if cs.planGuard != nil {
+		if err := cs.planGuard.Begin(prompt); err != nil {
+			return err
+		}
+	}
 	if !cs.alive.Load() {
 		return fmt.Errorf("session process is not running")
 	}
@@ -2138,6 +2189,7 @@ func (cs *claudeSession) Alive() bool {
 const defaultGracefulStopTimeout = 5 * time.Second
 
 func (cs *claudeSession) Close() error {
+	defer cs.planGuard.Close()
 	// Best-effort cleanup of the --append-system-prompt-file temp file on
 	// every exit path. The file is small (~9KB) and OS temp cleanup also
 	// eventually claims it, but explicit removal keeps workdirs tidy.

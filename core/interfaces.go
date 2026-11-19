@@ -396,6 +396,18 @@ type AgentSessionSteerer interface {
 	Steer(prompt string) error
 }
 
+// BusinessPlanBlockReporter distinguishes an enforced planning stop from a
+// completed business task, without exposing transport hook errors to users.
+type BusinessPlanBlockReporter interface {
+	BusinessPlanBlocked() bool
+}
+
+// BusinessPlanScopeReporter lets live display changes recycle a transport
+// before a timeline request could reuse an unguarded legacy CLI process.
+type BusinessPlanScopeReporter interface {
+	BusinessPlanningScoped() bool
+}
+
 // PermissionResult represents the user's decision on a permission request.
 type PermissionResult struct {
 	Behavior     string         `json:"behavior"`               // "allow" or "deny"
