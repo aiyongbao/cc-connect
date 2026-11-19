@@ -74,7 +74,7 @@ func buildTimelineCard(payload *core.ProgressCardPayload) string {
 		if segment.kind == core.ProgressEntryToolUse {
 			// The native header icon is reserved for the tool kind. A separate
 			// text cue keeps the collapsed group visibly clickable as well.
-			panel := buildProgressPanel(i18n.Tf(core.MsgTimelineToolGroup, len(rows))+" ▸", false, rows)
+			panel := buildProgressPanel(i18n.Tf(core.MsgTimelineToolGroup, len(rows))+" ▸", rows)
 			header := panel["header"].(map[string]any)
 			header["icon"] = timelineIcon(timelineToolIcon)
 			header["icon_position"] = "left"
@@ -96,7 +96,7 @@ func buildTimelineCard(payload *core.ProgressCardPayload) string {
 			count = len(payload.Items)
 		}
 		title := i18n.Tf(core.MsgTimelineDetails, count) + " ▸"
-		panel := buildProgressPanel(title, false, elements)
+		panel := buildProgressPanel(title, elements)
 		// Leave the outer panel on Feishu's theme-aware default background.
 		// Inner tool groups retain their existing neutral grey treatment.
 		delete(panel, "background_color")
@@ -176,7 +176,7 @@ func buildBusinessTimelineCard(payload *core.ProgressCardPayload, i18n *core.I18
 		if count == 0 {
 			count = len(payload.Items)
 		}
-		panel := buildProgressPanel(i18n.Tf(core.MsgTimelineTechnicalDetails, count)+" ▸", false, technical)
+		panel := buildProgressPanel(i18n.Tf(core.MsgTimelineTechnicalDetails, count)+" ▸", technical)
 		elements = append(elements, panel)
 	}
 

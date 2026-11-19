@@ -5594,7 +5594,7 @@ func TestCmdReasoning_UsageListsAgentEfforts(t *testing.T) {
 	t.Run("card note", func(t *testing.T) {
 		agent := &stubModelModeAgent{reasoningEfforts: efforts}
 		e := NewEngine("test", agent, nil, "", LangEnglish)
-		card := e.renderReasoningCard()
+		card := e.renderReasoningCard(e.agent)
 
 		for _, element := range card.Elements {
 			if note, ok := element.(CardNote); ok && note.Text == wantUsage {
@@ -5644,6 +5644,79 @@ func TestCmdReasoning_RejectsMinimal(t *testing.T) {
 	}
 	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "/reasoning <number>") || strings.Contains(p.sent[0], "minimal") {
 		t.Fatalf("sent = %v, want usage without minimal", p.sent)
+	}
+}
+
+// stubPiEffortAgent mimics agent/pi's reasoning effort set, which differs from
+// Codex's (no "max"; adds "off" and "minimal").
+type stubPiEffortAgent struct {
+	stubModelModeAgent
+}
+
+func (a *stubPiEffortAgent) AvailableReasoningEfforts() []string {
+	return []string{"off", "minimal", "low", "medium", "high", "xhigh"}
+}
+
+// TestCmdReasoning_NoHardcodedCodexLevels is a regression test for the bug
+// where /reasoning displayed Codex-specific text for every agent: the
+// not-set hint said "using Codex default" and the usage line hardcoded
+// Codex's <low|medium|high|xhigh|max> set. The usage line must list the
+// active agent's own AvailableReasoningEfforts() and mention no agent name.
+func TestCmdReasoning_NoHardcodedCodexLevels(t *testing.T) {
+	p := &stubPlatformEngine{n: "plain"}
+	agent := &stubPiEffortAgent{}
+	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
+	msg := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
+
+	// Listing (no args) on a text platform.
+	e.cmdReasoning(p, msg, nil)
+	if len(p.sent) != 1 {
+		t.Fatalf("expected 1 reply, got %d", len(p.sent))
+	}
+	got := p.sent[0]
+	if !strings.Contains(got, "off|minimal|low|medium|high|xhigh") {
+		t.Fatalf("usage line must list the agent's own efforts, got: %s", got)
+	}
+	if strings.Contains(got, "max") {
+		t.Fatalf("usage line must not contain efforts outside the agent's set (max), got: %s", got)
+	}
+	if strings.Contains(got, "Codex") {
+		t.Fatalf("output must not hardcode the agent name Codex, got: %s", got)
+	}
+
+	// Invalid target (a Codex-only level) also renders the agent-specific usage line.
+	p.sent = nil
+	e.cmdReasoning(p, msg, []string{"max"})
+	if len(p.sent) != 1 {
+		t.Fatalf("expected 1 reply for invalid effort, got %d", len(p.sent))
+	}
+	got = p.sent[0]
+	if !strings.Contains(got, "off|minimal|low|medium|high|xhigh") || strings.Contains(got, "Codex") {
+		t.Fatalf("invalid-effort reply = %q, want agent-specific usage without Codex mention", got)
+	}
+	if agent.reasoningEffort != "" {
+		t.Fatalf("reasoning effort = %q, want unchanged empty", agent.reasoningEffort)
+	}
+
+	// Card path: the not-set hint and card note must also stay agent-agnostic.
+	card := e.renderReasoningCard(agent)
+	var md, note string
+	for _, el := range card.Elements {
+		switch v := el.(type) {
+		case CardMarkdown:
+			md += v.Content
+		case CardNote:
+			note += v.Text
+		}
+	}
+	if strings.Contains(md, "Codex") || strings.Contains(note, "Codex") {
+		t.Fatalf("card must not mention Codex, markdown: %q note: %q", md, note)
+	}
+	if !strings.Contains(md, "not set, using default") {
+		t.Fatalf("card markdown should show agent-agnostic default hint, got: %q", md)
+	}
+	if !strings.Contains(note, "off|minimal|low|medium|high|xhigh") {
+		t.Fatalf("card note must list the agent's own efforts, got: %q", note)
 	}
 }
 
@@ -7063,6 +7136,60 @@ func TestHandlePendingPermission_AskUserQuestion_SingleQuestion(t *testing.T) {
 		t.Error("expected pending to be cleared after response")
 	}
 	state.mu.Unlock()
+}
+
+// A card click whose answer the platform already rendered in place must not
+// also be echoed as a chat message — the user would see the same answer twice
+// (card swapped to "✅ answer" plus a text reply saying "✅ question: answer").
+func TestHandlePendingPermission_AskUserQuestion_CardAnswerRenderedSuppressesEcho(t *testing.T) {
+	for _, rendered := range []bool{true, false} {
+		e := newTestEngine()
+		p := &stubPlatformEngine{n: "test"}
+		rec := &recordingAgentSession{}
+
+		state := &interactiveState{
+			agentSession: rec,
+			platform:     p,
+			replyCtx:     "ctx",
+			pending: &pendingPermission{
+				RequestID: "req-1",
+				ToolName:  "AskUserQuestion",
+				ToolInput: map[string]any{
+					"questions": []any{map[string]any{"question": "Which?"}},
+				},
+				Questions: testQuestions(),
+				Resolved:  make(chan struct{}),
+			},
+		}
+		key := "test:chat:user1"
+		e.interactiveMu.Lock()
+		e.interactiveStates[key] = state
+		e.interactiveMu.Unlock()
+
+		handled := e.handlePendingPermission(p, &Message{
+			SessionKey:         key,
+			UserID:             "user1",
+			Content:            "2",
+			ReplyCtx:           "ctx",
+			CardAnswerRendered: rendered,
+		}, "2", "")
+		if !handled {
+			t.Fatal("expected handlePendingPermission to return true")
+		}
+		if rec.calls != 1 {
+			t.Fatalf("rendered=%v: expected 1 RespondPermission call, got %d", rendered, rec.calls)
+		}
+
+		p.mu.Lock()
+		sent := append([]string(nil), p.sent...)
+		p.mu.Unlock()
+		if rendered && len(sent) != 0 {
+			t.Errorf("CardAnswerRendered=true produced %d echo message(s): %q", len(sent), sent)
+		}
+		if !rendered && len(sent) != 1 {
+			t.Errorf("CardAnswerRendered=false produced %d echo message(s), want 1 (typed answers still get one)", len(sent))
+		}
+	}
 }
 
 func TestHandlePendingPermission_AskUserQuestion_MultiQuestion_Sequential(t *testing.T) {
@@ -8603,7 +8730,31 @@ func TestCmdCronExec_TriggersJob(t *testing.T) {
 			for time.Now().Before(deadline) {
 				sent := platform.getSent()
 				if sentContains(sent, "triggered") && sentContains(sent, "manual run complete") {
-					return
+					// RunJobNow runs the job asynchronously and its completion
+					// bookkeeping (MarkRun → store save) can land after the
+					// output is sent. Wait for it before returning, otherwise
+					// the late write races t.TempDir() removal and the test
+					// flakes with "crons: directory not empty". MarkRun sets
+					// LastRun and saves while holding store.mu, so reading it
+					// under that lock both avoids a data race on the field and
+					// proves the save has completed. (store.Get returns the
+					// shared *CronJob, so reading the field after Get returns
+					// is unsynchronized.)
+					for time.Now().Before(deadline) {
+						store.mu.Lock()
+						marked := false
+						for _, j := range store.jobs {
+							if j.ID == job.ID && !j.LastRun.IsZero() {
+								marked = true
+							}
+						}
+						store.mu.Unlock()
+						if marked {
+							return
+						}
+						time.Sleep(5 * time.Millisecond)
+					}
+					t.Fatal("run output seen but the job was never marked complete")
 				}
 				time.Sleep(10 * time.Millisecond)
 			}
@@ -12340,7 +12491,7 @@ func TestRunShellWithProgress_NonexistentCommand(t *testing.T) {
 			if !strings.Contains(last, "❌") {
 				t.Errorf("expected failure emoji, got %q", last)
 			}
-			if !strings.Contains(last, "failed to start") && !strings.Contains(last, "not found") && !strings.Contains(last, "executable file not found") && !strings.Contains(last, "CommandNotFoundException") {
+			if !strings.Contains(last, "failed to start") && !strings.Contains(last, "not found") && !strings.Contains(last, "executable file not found") && !strings.Contains(last, "CommandNotFoundException") && !strings.Contains(last, "Permission denied") {
 				t.Errorf("expected start failure message, got %q", last)
 			}
 			return
@@ -15183,11 +15334,11 @@ func TestUnsolicitedReader_SetsResyncOnChannelClose(t *testing.T) {
 	}
 }
 
-// TestUnsolicitedReader_SetsResyncOnEventError verifies that EventError
-// sets eventsNeedResync to true and relays the error.
-func TestUnsolicitedReader_SetsResyncOnEventError(t *testing.T) {
+// A dead session cannot produce further background work after an error.
+func TestUnsolicitedReader_SetsResyncOnDeadSessionError(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	sess := newControllableSession("unsol-error")
+	sess.alive = false
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	defer e.Stop()
 
@@ -15234,6 +15385,52 @@ func TestUnsolicitedReader_SetsResyncOnEventError(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected error to be relayed to platform, got %v", sent)
+	}
+}
+
+func TestUnsolicitedReader_KeepsLiveSessionAfterTurnError(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	sess := newControllableSession("unsol-live-error")
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	t.Cleanup(func() {
+		if err := e.Stop(); err != nil {
+			t.Error(err)
+		}
+	})
+	const key = "test:live-error:u1"
+	session := e.sessions.GetOrCreateActive(key)
+	state := &interactiveState{agentSession: sess, platform: p, replyCtx: "ctx"}
+	e.startUnsolicitedReader(state, session, e.sessions, key, "")
+	defer e.stopUnsolicitedReader(state)
+
+	// Preserve text from each failed background turn and keep accepting
+	// subsequent results; neither error is a process-exit notification.
+	for _, text := range []string{"first partial answer", "second partial answer"} {
+		sess.events <- Event{Type: EventText, Content: text}
+		sess.events <- Event{Type: EventError, Error: errors.New("turn was refused")}
+	}
+	sess.events <- Event{Type: EventText, Content: "later background answer"}
+	sess.events <- Event{Type: EventResult, Done: true}
+
+	sent := waitForPlatformSend(p, 5, 2*time.Second)
+	if len(sent) != 5 {
+		t.Fatalf("expected two partial answers, two errors and a later answer; got %v", sent)
+	}
+	e.stopUnsolicitedReader(state)
+	for i, want := range []string{"first partial answer", "turn was refused", "second partial answer", "turn was refused", "later background answer"} {
+		if !strings.Contains(sent[i], want) {
+			t.Errorf("reply %d = %q, want %q", i, sent[i], want)
+		}
+	}
+	history := session.GetHistory(0)
+	if len(history) != 3 {
+		t.Fatalf("history lost background answers: %+v", history)
+	}
+	state.mu.Lock()
+	resync := state.eventsNeedResync
+	state.mu.Unlock()
+	if resync {
+		t.Error("live session should preserve its event stream after a turn error")
 	}
 }
 
@@ -17240,5 +17437,40 @@ func TestProcessInteractiveEvents_ProgressUpdateFailurePreservesFinalReply(t *te
 				t.Fatalf("final card payload = %#v, want completed", payload)
 			}
 		})
+	}
+}
+
+func TestCmdCurrent_UsesNativeSummaryForCurrentAgentSession(t *testing.T) {
+	nativeSessions := []AgentSessionInfo{
+		{ID: "agent-current", Summary: "Native generated title", MessageCount: 4, ModifiedAt: time.Now()},
+		{ID: "agent-other", Summary: "Other title", MessageCount: 2, ModifiedAt: time.Now()},
+	}
+	p := &stubPlatformEngine{n: "plain"}
+	e := NewEngine("test", &stubListAgent{sessions: nativeSessions}, []Platform{p}, "", LangEnglish)
+	msg := &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}
+	session := e.sessions.GetOrCreateActive(msg.SessionKey)
+	session.Name = "latest user message"
+	session.SetAgentSessionID("agent-current", "codex")
+	session.AddHistory("user", "latest user message")
+
+	e.cmdCurrent(p, msg)
+
+	if len(p.sent) != 1 {
+		t.Fatalf("sent messages = %d, want 1", len(p.sent))
+	}
+	if !strings.Contains(p.sent[0], "Name: Native generated title") {
+		t.Fatalf("/current = %q, want native summary display name", p.sent[0])
+	}
+	if strings.Contains(p.sent[0], "Name: latest user message") {
+		t.Fatalf("/current = %q, should not use local Session.Name when native summary exists", p.sent[0])
+	}
+
+	p.sent = nil
+	e.cmdList(p, msg, nil)
+	if len(p.sent) != 1 {
+		t.Fatalf("list sent messages = %d, want 1", len(p.sent))
+	}
+	if got := strings.Count(p.sent[0], "msgs"); got != len(nativeSessions) {
+		t.Fatalf("/list item count = %d, want %d\n%s", got, len(nativeSessions), p.sent[0])
 	}
 }
