@@ -21,6 +21,7 @@ const ServerName = "cc_connect_plan"
 
 type state struct {
 	SettingsSource  string                           `json:"settings_source,omitempty"`
+	SettingsTarget  string                           `json:"settings_target,omitempty"`
 	SettingsHash    string                           `json:"settings_hash,omitempty"`
 	HookPolicyFiles []string                         `json:"hook_policy_files,omitempty"`
 	Enabled         bool                             `json:"enabled"`

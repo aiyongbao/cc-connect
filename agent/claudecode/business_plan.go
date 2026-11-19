@@ -38,108 +38,126 @@ func planningPolicyFiles(workDir string, env []string) []string {
 	return paths
 }
 
-// Claude treats --settings as a scalar (last value wins). Consume it once,
-// resolving files against the CLI's working directory, then merge our hooks
-// into that value instead of appending a second flag that drops user settings.
-func splitPlanningSettings(workDir string, args []string) ([]string, map[string]any, string, error) {
-	var clean []string
+type planningSettings struct {
+	extraArgs      []string
+	values         map[string]any
+	source         string
+	resolvedSource string
+}
+
+// Claude treats --settings as a scalar (last value wins). Resolve a file once
+// so the fingerprint and the CLI use the same source, even through a symlink.
+func splitPlanningSettings(workDir string, args []string) (planningSettings, error) {
+	result := planningSettings{values: map[string]any{}}
 	var value string
 	hasSettings := false
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
-		if arg == "--settings" {
+		switch {
+		case arg == "--settings":
 			hasSettings = true
 			if i+1 >= len(args) {
-				return nil, nil, "", fmt.Errorf("missing CLI settings value")
+				return result, fmt.Errorf("missing CLI settings value")
 			}
 			i++
 			value = args[i]
-		} else if strings.HasPrefix(arg, "--settings=") {
+		case strings.HasPrefix(arg, "--settings="):
 			hasSettings = true
 			value = strings.TrimPrefix(arg, "--settings=")
-		} else {
-			clean = append(clean, arg)
+		default:
+			result.extraArgs = append(result.extraArgs, arg)
 		}
 	}
-	if hasSettings && value == "" {
-		return nil, nil, "", fmt.Errorf("empty CLI settings value")
+	if !hasSettings {
+		return result, nil
 	}
-	settings := map[string]any{}
-	var path string
-	if value != "" {
-		data := []byte(value)
-		if !strings.HasPrefix(strings.TrimSpace(value), "{") {
-			path = value
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(workDir, path)
-			}
-			var err error
-			path, err = filepath.Abs(path)
-			if err != nil {
-				return nil, nil, "", fmt.Errorf("cannot resolve CLI planning settings")
-			}
-			data, err = os.ReadFile(path)
-			if err != nil {
-				return nil, nil, "", fmt.Errorf("cannot read CLI planning settings")
-			}
+	if value == "" {
+		return result, fmt.Errorf("empty CLI settings value")
+	}
+	data := []byte(value)
+	if !strings.HasPrefix(strings.TrimSpace(value), "{") {
+		path := value
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(workDir, path)
 		}
-		if err := json.Unmarshal(stripJSONC(data), &settings); err != nil || settings == nil {
-			return nil, nil, "", fmt.Errorf("cannot parse CLI planning settings")
+		var err error
+		result.source, err = filepath.Abs(path)
+		if err != nil {
+			return result, fmt.Errorf("cannot resolve CLI planning settings")
+		}
+		result.resolvedSource, err = filepath.EvalSymlinks(result.source)
+		if err != nil {
+			return result, fmt.Errorf("cannot resolve CLI planning settings")
+		}
+		data, err = os.ReadFile(result.resolvedSource)
+		if err != nil {
+			return result, fmt.Errorf("cannot read CLI planning settings")
 		}
 	}
-	return clean, settings, path, nil
+	if err := json.Unmarshal(stripJSONC(data), &result.values); err != nil || result.values == nil {
+		return result, fmt.Errorf("cannot parse CLI planning settings")
+	}
+	return result, nil
 }
 
-func checkBusinessPlanningHooks(workDir string, env, args []string) error {
-	_, settings, path, err := splitPlanningSettings(workDir, args)
+type planningArgs struct {
+	extra   []string
+	inner   []string
+	overlay map[string]any
+}
+
+func preparePlanningArgs(g *planguard.Guard, workDir string, env, args []string) (planningArgs, error) {
+	settings, err := splitPlanningSettings(workDir, args)
 	if err != nil {
-		return err
+		return planningArgs{}, err
 	}
 	paths := planningPolicyFiles(workDir, env)
-	if path != "" {
-		paths = append(paths, path)
-	}
 	if err := planguard.CheckHookPolicyFiles(paths); err != nil {
-		return err
+		return planningArgs{}, err
 	}
-	data, _ := json.Marshal(settings)
-	return checkPlanningSettings(data)
-}
-
-func checkPlanningSettings(data []byte) error { return planguard.CheckHookPolicy(data) }
-
-func preparePlanningArgs(g *planguard.Guard, workDir string, env, args []string) ([]string, []string, error) {
-	clean, settings, path, err := splitPlanningSettings(workDir, args)
+	original, err := json.Marshal(settings.values)
 	if err != nil {
-		return nil, nil, err
+		return planningArgs{}, err
 	}
-	paths := planningPolicyFiles(workDir, env)
-	if path != "" {
-		paths = append(paths, path)
+	if err := planguard.CheckHookPolicy(original); err != nil {
+		return planningArgs{}, err
 	}
 	if err := g.SetHookPolicyFiles(paths); err != nil {
-		return nil, nil, err
-	}
-	original, err := json.Marshal(settings)
-	if err != nil {
-		return nil, nil, err
-	}
-	if err := g.SetSettingsSource(path, original); err != nil {
-		return nil, nil, err
-	}
-	if path != "" {
-		if err := anchorSettingsPermissionRules(settings, path); err != nil {
-			return nil, nil, err
-		}
+		return planningArgs{}, err
 	}
 	own := g.ClaudeArgs()
 	var injected map[string]any
 	if err := json.Unmarshal([]byte(own[1]), &injected); err != nil {
-		return nil, nil, err
+		return planningArgs{}, err
 	}
+	result := planningArgs{extra: settings.extraArgs}
+	if settings.source != "" {
+		if err := g.SetSettingsSource(settings.source, settings.resolvedSource, original); err != nil {
+			return planningArgs{}, err
+		}
+		// Preserve Claude's source directory for both its permission matcher and
+		// Bash sandbox. Install only the guard settings over stdio before Send.
+		result.inner = append([]string{"--settings", settings.resolvedSource}, own[2:]...)
+		result.overlay = injected
+		return result, nil
+	}
+	merged, err := mergeInlinePlanningSettings(settings.values, injected)
+	if err != nil {
+		return planningArgs{}, err
+	}
+	// The private file keeps any inline credentials out of argv and logs.
+	mergedPath := filepath.Join(filepath.Dir(g.Path), "claude-settings.json")
+	if err := os.WriteFile(mergedPath, merged, 0600); err != nil {
+		return planningArgs{}, fmt.Errorf("cannot write private planning settings")
+	}
+	result.inner = append([]string{"--settings", mergedPath}, own[2:]...)
+	return result, nil
+}
+
+func mergeInlinePlanningSettings(settings, injected map[string]any) ([]byte, error) {
 	hooks, ok := settings["hooks"].(map[string]any)
 	if settings["hooks"] != nil && !ok {
-		return nil, nil, fmt.Errorf("cannot merge CLI planning hooks")
+		return nil, fmt.Errorf("cannot merge CLI planning hooks")
 	}
 	if hooks == nil {
 		hooks = map[string]any{}
@@ -147,26 +165,12 @@ func preparePlanningArgs(g *planguard.Guard, workDir string, env, args []string)
 	for event, groups := range injected["hooks"].(map[string]any) {
 		existing, ok := hooks[event].([]any)
 		if hooks[event] != nil && !ok {
-			return nil, nil, fmt.Errorf("cannot merge CLI planning hooks")
+			return nil, fmt.Errorf("cannot merge CLI planning hooks")
 		}
 		hooks[event] = append(existing, groups.([]any)...)
 	}
 	settings["hooks"] = hooks
-	// The guard remains callable across hot reloads. It checks original policy
-	// files before every tool and denies work if the user disables hooks there.
 	settings["disableAllHooks"] = false
 	settings["allowManagedHooksOnly"] = false
-	merged, err := json.Marshal(settings)
-	if err != nil {
-		return nil, nil, err
-	}
-	// A merged file may contain credentials from the user settings. Keep its
-	// contents out of argv, debug logs, and the process list. Guard.Close owns
-	// cleanup of this private directory.
-	mergedPath := filepath.Join(filepath.Dir(g.Path), "claude-settings.json")
-	if err := os.WriteFile(mergedPath, merged, 0600); err != nil {
-		return nil, nil, fmt.Errorf("cannot write private planning settings")
-	}
-	injectedArgs := append([]string{"--settings", mergedPath}, own[2:]...)
-	return clean, injectedArgs, nil
+	return json.Marshal(settings)
 }

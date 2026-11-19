@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/chenhg5/cc-connect/core"
 )
@@ -96,15 +97,15 @@ func (g *Guard) CheckClaudeSettings(data []byte) error {
 	return nil
 }
 
-// Source settings are merged into a private file. If an explicit source file
-// changes, stop using its old permission snapshot. The engine reconnects the
-// next turn using the saved conversation ID and merges the new settings.
-func (g *Guard) SetSettingsSource(path string, settings []byte) error {
+// Keep both the original name and the resolved target. An identical settings
+// file in a different directory can grant and deny access to different paths.
+func (g *Guard) SetSettingsSource(path, target string, settings []byte) error {
 	if path == "" {
 		return nil
 	}
 	return withState(g.Path, func(s *state) error {
 		s.SettingsSource = path
+		s.SettingsTarget = target
 		s.SettingsHash = fmt.Sprintf("%x", sha256.Sum256(settings))
 		return nil
 	})
@@ -113,7 +114,11 @@ func settingsSourceChanged(s *state) bool {
 	if s.SettingsSource == "" {
 		return false
 	}
-	data, err := os.ReadFile(s.SettingsSource)
+	target, err := filepath.EvalSymlinks(s.SettingsSource)
+	if err != nil || target != s.SettingsTarget {
+		return true
+	}
+	data, err := os.ReadFile(target)
 	if err != nil {
 		return true
 	}
