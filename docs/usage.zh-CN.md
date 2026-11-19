@@ -737,6 +737,22 @@ speed = 0.96
 
 ---
 
+## 用户发送的图片
+
+默认情况下，用户发来的图片会作为图片附件交给 agent，agent 再把图片内容放进模型请求。一条消息带多张大图时，请求可能超过模型网关的大小限制（例如 `413 Payload Too Large`），之后这个会话会一直出错，直到 `/new`。
+
+在项目上设置 `image_input = "path"`，图片就不会进入模型请求：
+
+```toml
+[[projects]]
+name = "my-project"
+image_input = "path"   # 默认 "attach"
+```
+
+`path` 模式下，cc-connect 把每张图片存到 `<work_dir>/.cc-connect/attachments/<消息ID>/`，并在提示词末尾附上文件路径。agent 的工具和脚本可以直接使用这些文件，需要看图时再自行打开。修改后 `/config reload` 或重启生效。
+
+---
+
 ## 图片、文件与语音回传
 
 当 Agent 在本地生成了图片、PDF、日志包、报表等文件，需要把结果直接发回当前聊天时，可以使用 `cc-connect send` 的附件模式。用户明确要求“发语音”时，Agent 也可以用同一个 CLI 走 TTS 合成并发送语音。

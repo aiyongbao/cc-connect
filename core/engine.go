@@ -376,6 +376,7 @@ type Engine struct {
 	tts                   *TTSCfg
 	display               DisplayCfg
 	injectSender          bool
+	imageInputPath        bool // image_input = "path": save user images to disk, keep them out of the agent request
 	attachmentSendEnabled bool
 	startedAt             time.Time
 
@@ -1087,6 +1088,55 @@ func (e *Engine) SetSkipGit(skipGit bool) {
 // accordingly (e.g. personal task views, role-based access control).
 func (e *Engine) SetInjectSender(v bool) {
 	e.injectSender = v
+}
+
+// SetImageInput selects how user-sent images reach the agent: "attach" (default)
+// passes them as image attachments, which agents inline into the model request;
+// "path" saves them to disk and only mentions the paths in the prompt.
+func (e *Engine) SetImageInput(mode string) {
+	e.imageInputPath = strings.EqualFold(strings.TrimSpace(mode), "path")
+}
+
+// agentInput applies image_input = "path": images are written under the
+// session's work dir and replaced by a note listing their paths, so many or
+// large images can't push the model request over the gateway's size limit.
+func (e *Engine) agentInput(state *interactiveState, prompt, messageID string, images []ImageAttachment) (string, []ImageAttachment) {
+	if !e.imageInputPath || len(images) == 0 {
+		return prompt, images
+	}
+	files := make([]FileAttachment, len(images))
+	for i, img := range images {
+		name := img.FileName
+		if name == "" {
+			name = fmt.Sprintf("image_%d%s", i+1, ExtFromMime(img.MimeType))
+		}
+		files[i] = FileAttachment{MimeType: img.MimeType, Data: img.Data, FileName: name}
+	}
+	paths := SaveFilesToDisk(e.interactiveWorkDir(state), messageID, files)
+	if len(paths) == 0 {
+		return prompt, images
+	}
+	return AppendSavedImageNote(prompt, paths), nil
+}
+
+func (e *Engine) interactiveWorkDir(state *interactiveState) string {
+	if state != nil {
+		if dir := strings.TrimSpace(state.workspaceDir); dir != "" {
+			return dir
+		}
+		if wd, ok := state.agent.(interface{ GetWorkDir() string }); ok {
+			if dir := strings.TrimSpace(wd.GetWorkDir()); dir != "" {
+				return dir
+			}
+		}
+	}
+	if wd, ok := e.agent.(interface{ GetWorkDir() string }); ok {
+		if dir := strings.TrimSpace(wd.GetWorkDir()); dir != "" {
+			return dir
+		}
+	}
+	dir, _ := os.Getwd()
+	return dir
 }
 
 // SetAttachmentSendEnabled controls whether side-channel image/file delivery is allowed.
@@ -4302,7 +4352,8 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 			sendDone <- fmt.Errorf("agent session became nil")
 			return
 		}
-		sendDone <- as.Send(promptContent, msg.MessageID, msg.Images, msg.Files)
+		prompt, images := e.agentInput(state, promptContent, msg.MessageID, msg.Images)
+		sendDone <- as.Send(prompt, msg.MessageID, images, msg.Files)
 	}()
 
 	e.processInteractiveEvents(state, session, sessions, interactiveKey, msg.MessageID, turnStart, stopTyping, sendDone, msg.ReplyCtx, lockGen)
@@ -6996,7 +7047,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						nextSend <- fmt.Errorf("agent session became nil")
 						return
 					}
-					nextSend <- as.Send(queuedPrompt, queued.messageID, queued.images, queued.files)
+					prompt, images := e.agentInput(state, queuedPrompt, queued.messageID, queued.images)
+					nextSend <- as.Send(prompt, queued.messageID, images, queued.files)
 				}()
 				pendingSend = nextSend
 
@@ -7345,7 +7397,8 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 				sendDone <- fmt.Errorf("agent session became nil")
 				return
 			}
-			sendDone <- as.Send(prompt, queued.messageID, queued.images, queued.files)
+			agentPrompt, images := e.agentInput(state, prompt, queued.messageID, queued.images)
+			sendDone <- as.Send(agentPrompt, queued.messageID, images, queued.files)
 		}()
 
 		var stopTyping func()

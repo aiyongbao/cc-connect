@@ -731,6 +731,7 @@ func main() {
 		if proj.InjectSender != nil {
 			engine.SetInjectSender(*proj.InjectSender)
 		}
+		engine.SetImageInput(proj.ImageInput)
 
 		// Wire speech-to-text if enabled
 		if cfg.Speech.Enabled {
@@ -1876,6 +1877,9 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
 
 	// Reload sender injection
 	engine.SetInjectSender(proj.InjectSender != nil && *proj.InjectSender)
+
+	// Reload image input mode
+	engine.SetImageInput(proj.ImageInput)
 
 	// Reload attachment send-back switch
 	engine.SetAttachmentSendEnabled(cfg.AttachmentSend != "off")

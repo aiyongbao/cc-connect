@@ -553,6 +553,22 @@ func TestEffectiveDisplayHideAgentFooter(t *testing.T) {
 	}
 }
 
+func TestValidateProjectImageInput(t *testing.T) {
+	for _, mode := range []string{"", "attach", "path"} {
+		cfg := Config{Projects: []ProjectConfig{validProject("demo")}}
+		cfg.Projects[0].ImageInput = mode
+		if err := cfg.validate(); err != nil {
+			t.Fatalf("image_input %q: validate() = %v, want nil", mode, err)
+		}
+	}
+	cfg := Config{Projects: []ProjectConfig{validProject("demo")}}
+	cfg.Projects[0].ImageInput = "inline"
+	err := cfg.validate()
+	if err == nil || !strings.Contains(err.Error(), `projects[0].image_input must be "attach" or "path"`) {
+		t.Fatalf("validate() = %v, want image_input error", err)
+	}
+}
+
 func TestValidateProjectDisplayConfig(t *testing.T) {
 	mode := "verbose"
 	cardMode := "modern"

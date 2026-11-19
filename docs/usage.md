@@ -825,6 +825,22 @@ Switch: `/tts always` or `/tts voice_only`
 
 ---
 
+## Images Sent by Users
+
+By default, images a user sends are handed to the agent as image attachments, and the agent embeds them in the model request. Several large images in one message can push that request over the model gateway's size limit (for example `413 Payload Too Large`), and the conversation keeps failing until `/new`.
+
+Set `image_input = "path"` on the project to keep images out of the request:
+
+```toml
+[[projects]]
+name = "my-project"
+image_input = "path"   # default: "attach"
+```
+
+In `path` mode cc-connect saves each image under `<work_dir>/.cc-connect/attachments/<message_id>/` and appends a note with the file paths to the prompt. The agent's tools and scripts can use the files, and the agent opens one only when it needs to see it. Changing the setting takes effect after `/config reload` or a restart.
+
+---
+
 ## Image, File, and Voice Send-Back
 
 When an agent generates a local image, PDF, report, bundle, or other file and needs to deliver it directly to the current chat, use attachment mode in `cc-connect send`. When the user explicitly asks for a voice message, the agent can also send synthesized speech through the same CLI.

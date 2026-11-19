@@ -781,6 +781,13 @@ name = "my-backend"
 #                                   # 隐藏 footer 第二行：工作区目录（默认 true 显示）
 # disabled_commands = ["restart", "upgrade", "cron"]  # Disable specific commands for this project
 #                                                     # 禁用该项目的指定命令
+# image_input = "path"             # "attach" (default): pass user images to the agent, which inlines them
+#                                   # into the model request; "path": save them under
+#                                   # <work_dir>/.cc-connect/attachments/ and only list the paths in the prompt
+#                                   # (use when many/large images make the model gateway return 413)
+#                                   # "attach"（默认）：图片作为附件交给 agent，随模型请求一起发送；
+#                                   # "path"：图片只存到 <work_dir>/.cc-connect/attachments/，提示词里列出路径
+#                                   # （多图或大图导致模型网关返回 413 时使用）
 #
 # filter_external_sessions: when true, /list /switch /delete only show sessions
 # created by cc-connect, hiding sessions from direct CLI usage in the same work_dir.
