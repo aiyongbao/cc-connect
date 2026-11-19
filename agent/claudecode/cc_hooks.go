@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/chenhg5/cc-connect/core"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -43,15 +44,15 @@ type ccHookDecision struct {
 // hookContext carries the session context needed to build hook stdin.
 // Fields mirror Claude Code's PermissionRequest hook input spec.
 type hookContext struct {
-	sessionID          string
-	toolName           string
-	toolInput          map[string]any
-	cwd                string
-	permissionMode     string
-	transcriptPath     string
-	permissionSuggestions []any // nil = omit from stdin
-	agentID            string // empty = omit
-	agentType          string // empty = omit
+	sessionID             string
+	toolName              string
+	toolInput             map[string]any
+	cwd                   string
+	permissionMode        string
+	transcriptPath        string
+	permissionSuggestions []any  // nil = omit from stdin
+	agentID               string // empty = omit
+	agentType             string // empty = omit
 }
 
 // ccPermissionHookRunner reads and executes Claude Code PermissionRequest
@@ -157,76 +158,7 @@ func readSettingsFile(path string) (*ccSettings, error) {
 	return &s, nil
 }
 
-// stripJSONC removes // and /* */ comments from JSONC, preserving strings.
-func stripJSONC(data []byte) []byte {
-	var out bytes.Buffer
-	inString := false
-	escaped := false
-	i := 0
-	for i < len(data) {
-		ch := data[i]
-
-		if escaped {
-			out.WriteByte(ch)
-			escaped = false
-			i++
-			continue
-		}
-
-		if inString {
-			out.WriteByte(ch)
-			switch ch {
-			case '\\':
-				escaped = true
-			case '"':
-				inString = false
-			}
-			i++
-			continue
-		}
-
-		// Not in string.
-		if ch == '"' {
-			inString = true
-			out.WriteByte(ch)
-			i++
-			continue
-		}
-
-		if ch == '/' && i+1 < len(data) {
-			next := data[i+1]
-			if next == '/' {
-				// Line comment — skip to end of line.
-				i += 2
-				for i < len(data) && data[i] != '\n' {
-					i++
-				}
-				continue
-			}
-			if next == '*' {
-				// Block comment — skip to closing */.
-				i += 2
-				closed := false
-				for i+1 < len(data) {
-					if data[i] == '*' && data[i+1] == '/' {
-						i += 2
-						closed = true
-						break
-					}
-					i++
-				}
-				if !closed {
-					return data // return original; json.Unmarshal will give a clear error
-				}
-				continue
-			}
-		}
-
-		out.WriteByte(ch)
-		i++
-	}
-	return out.Bytes()
-}
+func stripJSONC(data []byte) []byte { return core.StripJSONC(data) }
 
 // matchHookEntry checks if toolName matches the matcher.
 // Empty or "*" matcher matches everything. Otherwise exact match.

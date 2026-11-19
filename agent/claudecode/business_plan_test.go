@@ -47,6 +47,7 @@ func TestMain(m *testing.M) {
 // It reproduces today's ToolSearch → Bash omission, then lets the model recover
 // with real TaskCreate results. No provider, IM, or business source is contacted.
 func runPlanningCLIFixture() error {
+	var effective map[string]any
 	var settings struct {
 		Hooks map[string][]struct {
 			Hooks []struct {
@@ -56,12 +57,23 @@ func runPlanningCLIFixture() error {
 	}
 	for i, a := range os.Args {
 		if a == "--settings" && i+1 < len(os.Args) {
-			if err := json.Unmarshal([]byte(os.Args[i+1]), &settings); err != nil {
+			value := []byte(os.Args[i+1])
+			if !strings.HasPrefix(strings.TrimSpace(string(value)), "{") {
+				var err error
+				value, err = os.ReadFile(string(value))
+				if err != nil {
+					return err
+				}
+			}
+			if err := json.Unmarshal(value, &effective); err != nil {
+				return err
+			}
+			if err := json.Unmarshal(value, &settings); err != nil {
 				return err
 			}
 		}
 	}
-	if len(settings.Hooks["PreToolUse"]) != 1 {
+	if len(settings.Hooks["PreToolUse"]) < 1 {
 		return fmt.Errorf("missing pre-execution guard")
 	}
 	enc := json.NewEncoder(os.Stdout)
@@ -71,7 +83,8 @@ func runPlanningCLIFixture() error {
 		}
 	}
 	hook := func(event, name, id string, input map[string]any, response any) (bool, error) {
-		command := settings.Hooks[event][0].Hooks[0].Command
+		groups := settings.Hooks[event]
+		command := groups[len(groups)-1].Hooks[0].Command
 		data, _ := json.Marshal(map[string]any{"hook_event_name": event, "tool_name": name, "tool_use_id": id, "tool_input": input, "tool_response": response})
 		cmd := exec.Command("sh", "-c", command)
 		cmd.Stdin = bytes.NewReader(data)
@@ -105,12 +118,24 @@ func runPlanningCLIFixture() error {
 	turn := 0
 	for scanner.Scan() {
 		var request struct {
-			Type    string `json:"type"`
-			Message struct {
+			Type      string `json:"type"`
+			RequestID string `json:"request_id"`
+			Message   struct {
 				Content string `json:"content"`
 			} `json:"message"`
 		}
-		if json.Unmarshal(scanner.Bytes(), &request) != nil || request.Type != "user" {
+		if json.Unmarshal(scanner.Bytes(), &request) != nil {
+			continue
+		}
+		if request.Type == "control_request" {
+			responseSettings := effective
+			if os.Getenv("CC_TEST_PLAN_DROP_EFFECTIVE_HOOKS") == "1" {
+				responseSettings = map[string]any{}
+			}
+			emit(map[string]any{"type": "control_response", "response": map[string]any{"subtype": "success", "request_id": request.RequestID, "response": map[string]any{"effective": responseSettings}}})
+			continue
+		}
+		if request.Type != "user" {
 			continue
 		}
 		turn++
@@ -137,6 +162,17 @@ func runPlanningCLIFixture() error {
 			if ok, err := tool("TaskCreate", fmt.Sprintf("create-%d-%d", turn, i), map[string]any{"subject": title}, map[string]any{"task": map[string]any{"id": id, "subject": title, "status": "pending"}}); err != nil || !ok {
 				return fmt.Errorf("plan creation failed: %v", err)
 			}
+		}
+		if os.Getenv("CC_TEST_PLAN_RELOAD_IN_TURN") == "1" {
+			if err := os.WriteFile(filepath.Join(os.Getenv("CLAUDE_CONFIG_DIR"), "settings.json"), []byte(`{"disableAllHooks":true}`), 0600); err != nil {
+				return err
+			}
+			ok, err := tool("Bash", fmt.Sprintf("disabled-%d", turn), nil, nil)
+			if err != nil || ok {
+				return fmt.Errorf("disabled-hook policy was bypassed: %v", err)
+			}
+			emit(map[string]any{"type": "result", "subtype": "success", "session_id": "plan-fixture", "result": "policy paused"})
+			continue
 		}
 		if ok, err := tool("Bash", fmt.Sprintf("business-%d", turn), nil, map[string]any{"success": true}); err != nil || !ok {
 			return fmt.Errorf("planned work blocked: %v", err)

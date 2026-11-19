@@ -581,6 +581,7 @@ type interactiveState struct {
 	lastRecallProbeAt        time.Time
 	recallProbeInFlight      bool
 	workspaceDir             string
+	ccSessionKey             string
 	agent                    Agent
 	planSetupFailed          bool // immutable startup result; never invalidates the saved conversation
 	mu                       sync.Mutex
@@ -4571,7 +4572,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 		// If wantID is empty (/new, cleared session) but the process already has
 		// a concrete ID, reusing would keep --resume context — recycle (#238).
 		needRecycle := currentID != "" && (wantID == "" || wantID != currentID)
-		if scoped, ok := state.agentSession.(BusinessPlanScopeReporter); ok && scoped.BusinessPlanningScoped() != timelineProgressEnabled(p, replyCtx, e.display.CardMode) {
+		if interactiveSessionNeedsRefresh(state.agentSession, p, replyCtx, e.display.CardMode) {
 			needRecycle = true
 		}
 		if !needRecycle {
@@ -4591,7 +4592,8 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 		// Close synchronously to prevent race condition where old agent
 		// continues outputting while new agent starts (issue #327).
 		e.closeAgentSessionWithTimeout(sessionKey, state.agentSession, state.platform, state.replyCtx)
-		delete(e.interactiveStates, sessionKey)
+		// Retain this stopped placeholder until replacement so its queued
+		// messages can be adopted even when a display-scope change recycles it.
 		ok = false // prevent reading stale settings below
 	}
 
@@ -4763,6 +4765,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 
 	newState := &interactiveState{
 		agentSession:          agentSession,
+		ccSessionKey:          ccKey,
 		initialContextPending: !isResume,
 		busySession:           session,
 		platform:              p,
@@ -5819,7 +5822,12 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				state.mu.Lock()
 				p := state.platform
 				state.mu.Unlock()
-				e.send(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
+				var planningErr *BusinessPlanSetupError
+				if errors.As(err, &planningErr) {
+					e.send(p, replyCtx, e.i18n.T(MsgTimelinePlanUnavailable))
+				} else {
+					e.send(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
+				}
 				return
 			}
 			continue
@@ -7032,6 +7040,13 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			}
 			if len(state.pendingMessages) > 0 {
 				queued := state.pendingMessages[0]
+				if interactiveSessionNeedsRefresh(agentSession, queued.platform, queued.replyCtx, e.display.CardMode) {
+					state.mu.Unlock()
+					if pendingSend != nil {
+						<-pendingSend
+					}
+					return
+				}
 				state.pendingMessages = state.pendingMessages[1:]
 				remainingQueue := len(state.pendingMessages)
 				state.platform = queued.platform
@@ -7396,6 +7411,21 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 			return true
 		}
 		queued := state.pendingMessages[0]
+		if interactiveSessionNeedsRefresh(state.agentSession, queued.platform, queued.replyCtx, e.display.CardMode) {
+			agent, workspaceDir, ccKey := state.agent, state.workspaceDir, state.ccSessionKey
+			state.mu.Unlock()
+			state = e.getOrCreateInteractiveStateWith(sessionKey, queued.platform, queued.replyCtx, session, sessions, agent, ccKey)
+			state.mu.Lock()
+			state.workspaceDir = workspaceDir
+			if state.agentSession == nil {
+				state.mu.Unlock()
+				e.notifyDroppedQueuedMessages(state, errors.New(e.i18n.T(MsgTimelinePlanUnavailable)))
+				session.Unlock(lockGen)
+				return true
+			}
+			state.mu.Unlock()
+			continue
+		}
 		state.pendingMessages = state.pendingMessages[1:]
 		state.platform = queued.platform
 		state.replyCtx = queued.replyCtx
@@ -7417,6 +7447,8 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 			return false
 		}
 
+		e.cancelAgentSessionIdleClose(state)
+		e.stopUnsolicitedReader(state)
 		drainEvents(as.Events())
 
 		session.AddHistory("user", queued.content)
@@ -7438,6 +7470,14 @@ func (e *Engine) drainPendingMessages(state *interactiveState, session *Session,
 
 		slog.Info("processing queued message", "session", sessionKey)
 		e.processInteractiveEvents(state, session, sessions, sessionKey, queued.messageID, time.Now(), stopTyping, sendDone, queued.replyCtx, lockGen)
+		state.mu.Lock()
+		alive := state.agentSession != nil && state.agentSession.Alive() && !state.stopped && !state.eventsNeedResync
+		workspaceDir := state.workspaceDir
+		state.mu.Unlock()
+		if alive {
+			e.startUnsolicitedReader(state, session, sessions, sessionKey, workspaceDir)
+			e.scheduleAgentSessionIdleClose(sessionKey, state)
+		}
 	}
 }
 

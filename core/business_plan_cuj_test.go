@@ -64,6 +64,9 @@ func (s *businessPlanCUJSession) Send(prompt, id string, images []ImageAttachmen
 	s.blocked.Set(false)
 	s.mu.Lock()
 	switch {
+	case strings.HasSuffix(prompt, "verify hooks unavailable"):
+		s.mu.Unlock()
+		return &BusinessPlanSetupError{Err: errors.New("private CLI settings response")}
 	case strings.HasSuffix(prompt, "skip plan"):
 		s.blocked.Set(true)
 		s.pendingEvents = []Event{{Type: EventToolUse, ToolName: "Bash", ToolInput: "INTERNAL_COMMAND"}, {Type: EventToolResult, ToolStatus: "failed"}, {Type: EventResult, Content: "FALSE_COMPLETION", Done: true}}
@@ -158,5 +161,34 @@ func TestCUJ_STREAM7_PlanningSetupFailurePreservesHistoryAndResumeForRetry(t *te
 	sendTimelineCUJ(env, p, "retry after configuration is fixed")
 	env.waitFor("retry result", 2*time.Second, func() bool {
 		return !session.Busy() && strings.Contains(strings.Join(p.getSent(), "\n"), "retry complete")
+	})
+}
+
+func TestCUJ_STREAM9_RuntimePlanningFailurePreservesConversationAndUsesBusinessNotice(t *testing.T) {
+	p := &timelineTestPlatform{style: "timeline"}
+	p.n = "test"
+	s := &businessPlanCUJSession{cujAgentSession: newCUJAgentSession()}
+	e := NewEngine("test", &resultAgent{session: s}, []Platform{p}, t.TempDir()+"/sessions.json", LangChinese)
+	e.display.CardMode = "timeline"
+	env := &cujEnv{t: t, engine: e, plat: &p.stubPlatformEngine}
+	t.Cleanup(func() { _ = e.Stop() })
+	sendTimelineCUJ(env, p, "generate daily report")
+	env.waitFor("initial report", 2*time.Second, func() bool {
+		return !e.sessions.GetOrCreateActive("test:jack").Busy() && strings.Contains(strings.Join(p.getSent(), "\n"), "虚拟利润表和日报已完成")
+	})
+	saved := e.sessions.GetOrCreateActive("test:jack").GetAgentSessionID()
+	sendTimelineCUJ(env, p, "verify hooks unavailable")
+	env.waitFor("localized planning notice", 2*time.Second, func() bool {
+		return !e.sessions.GetOrCreateActive("test:jack").Busy() && strings.Contains(strings.Join(p.getSent(), "\n"), e.i18n.T(MsgTimelinePlanUnavailable))
+	})
+	if strings.Contains(strings.Join(p.getSent(), "\n"), "private CLI settings response") {
+		t.Fatal("technical prerequisite details escaped to business chat")
+	}
+	if e.sessions.GetOrCreateActive("test:jack").GetAgentSessionID() != saved {
+		t.Fatal("runtime policy failure discarded native conversation")
+	}
+	sendTimelineCUJ(env, p, "generate daily report")
+	env.waitFor("same-session retry", 2*time.Second, func() bool {
+		return !e.sessions.GetOrCreateActive("test:jack").Busy() && strings.Count(strings.Join(p.getSent(), "\n"), "虚拟利润表和日报已完成") == 2
 	})
 }
