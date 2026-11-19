@@ -231,6 +231,10 @@ var topLevelCommandHandlers = map[string]func([]string){
 }
 
 func main() {
+	// Hook/MCP stdout must contain protocol JSON only.
+	if runPlanGuardCommand() {
+		return
+	}
 	// Agy hooks require stdout to contain only the final JSON decision. Handle
 	// this internal command before update checks, logging, or normal CLI setup.
 	if len(os.Args) > 1 && os.Args[1] == "_agy-permission-hook" {

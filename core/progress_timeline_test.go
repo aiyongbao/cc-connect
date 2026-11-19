@@ -97,7 +97,9 @@ func TestTimelineProgress_ExplicitBusinessStepsDrivePrimaryState(t *testing.T) {
 		t.Fatal("public text should remain available to the normal final-reply path")
 	}
 	payload = lastTimelinePayload(t, p)
-	if payload.LatestActivity != "正在核对飞书渲染结构" {
+	// Public narration is not a plan update. Business cards keep the last
+	// explicit planning explanation instead of promoting technical chatter.
+	if payload.LatestActivity != "开始实现卡片主视图" {
 		t.Fatalf("latest public activity = %q", payload.LatestActivity)
 	}
 

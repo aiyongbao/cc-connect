@@ -43,6 +43,10 @@ const (
 	MsgTimelineElapsed          MsgKey = "timeline_elapsed"
 	MsgTimelineCurrentStep      MsgKey = "timeline_current_step"
 	MsgTimelineRecentActivity   MsgKey = "timeline_recent_activity"
+	MsgTimelinePlanning         MsgKey = "timeline_planning"
+	MsgTimelinePlanBlocked      MsgKey = "timeline_plan_blocked"
+	MsgTimelinePlanUnavailable  MsgKey = "timeline_plan_unavailable"
+	MsgTimelineBusinessActivity MsgKey = "timeline_business_activity"
 	MsgTimelineToolReturned     MsgKey = "timeline_tool_returned"
 	// Paused cards are immutable; continuation opens a new card after the prompt.
 	ProgressCardStatePaused      ProgressCardState = "paused"
@@ -135,7 +139,8 @@ func newTimelineProgressLocked(ctx context.Context, state *interactiveState, ses
 		startedAt:         now,
 		stopped:           make(chan struct{}),
 		payload: ProgressCardPayload{
-			Version: 2, Style: progressStyleTimeline, TurnID: rand.Text(), SessionKey: sessionKey,
+			BusinessOnly: true,
+			Version:      2, Style: progressStyleTimeline, TurnID: rand.Text(), SessionKey: sessionKey,
 			Agent: normalizeProgressAgentLabel(agent), Lang: string(lang), State: ProgressCardStateRunning,
 			StartedAt: now.Format(time.RFC3339), LastActivityAt: now.Format(time.RFC3339),
 			Items: []ProgressCardEntry{{Kind: ProgressEntryInfo, Text: NewI18n(lang).T(MsgStarting)}},
@@ -227,7 +232,9 @@ func (w *timelineProgress) Handle(event Event, display DisplayCfg) bool {
 	if event.Type == EventText {
 		text := strings.TrimSpace(event.Content)
 		if len(w.payload.Steps) > 0 && text != "" {
-			w.payload.LatestActivity = truncateIf(strings.Join(strings.Fields(text), " "), 240)
+			if !w.payload.BusinessOnly {
+				w.payload.LatestActivity = truncateIf(strings.Join(strings.Fields(text), " "), 240)
+			}
 			w.payload.LastActivityAt = now.Format(time.RFC3339)
 			changed = true
 		}
@@ -264,6 +271,9 @@ func (w *timelineProgress) Handle(event Event, display DisplayCfg) bool {
 		}
 		if len(w.payload.Steps) > 0 {
 			w.payload.LatestActivity = timelineToolActivity(name, timelineToolSummary(event.ToolInput))
+			if w.payload.BusinessOnly {
+				w.payload.LatestActivity = NewI18n(Language(w.payload.Lang)).T(MsgTimelineBusinessActivity)
+			}
 			w.payload.LastActivityAt = now.Format(time.RFC3339)
 			changed = true
 		}
@@ -289,6 +299,9 @@ func (w *timelineProgress) Handle(event Event, display DisplayCfg) bool {
 					status = NewI18n(Language(w.payload.Lang)).T(MsgTimelineToolFailed)
 				}
 				w.payload.LatestActivity = name + " · " + status
+				if w.payload.BusinessOnly {
+					w.payload.LatestActivity = NewI18n(Language(w.payload.Lang)).T(MsgTimelineBusinessActivity)
+				}
 				w.payload.LastActivityAt = now.Format(time.RFC3339)
 				changed = true
 			}

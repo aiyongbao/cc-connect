@@ -18,12 +18,15 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/chenhg5/cc-connect/agent/planguard"
 	"github.com/chenhg5/cc-connect/core"
 )
 
 // codexSession manages a multi-turn Codex conversation.
 // First Send() uses `codex exec`, subsequent ones use `codex exec resume <threadID>`.
 type codexSession struct {
+	planGuard      *planguard.Guard
+	planArgs       []string
 	workDir        string
 	model          string
 	effort         string
@@ -62,6 +65,10 @@ type codexSession struct {
 }
 
 var codexSessionCloseTimeout = 8 * time.Second
+
+func (cs *codexSession) BusinessPlanBlocked() bool    { return cs.planGuard.Blocked() }
+func (cs *codexSession) BusinessPlanningScoped() bool { return cs.planGuard != nil }
+
 var codexSessionForceKillWait = 2 * time.Second
 var codexRuntimeConfigCacheTTL = 5 * time.Second
 var codexRuntimeConfigTimeout = 1500 * time.Millisecond
@@ -111,6 +118,23 @@ func newCodexSession(ctx context.Context, cliBin string, cliExtraArgs []string, 
 		cmds:           make(map[*exec.Cmd]struct{}),
 	}
 	cs.alive.Store(true)
+	if core.BusinessPlanningEnabled(ctx) {
+		guard, err := planguard.New()
+		if err != nil {
+			cancel()
+			return nil, err
+		}
+		cs.planGuard = guard
+		bin, err := resolveCodexExecutable(cliBin)
+		if err == nil {
+			cs.planArgs, err = guard.PrepareCodex(ctx, bin, cliExtraArgs, workDir, core.MergeEnv(os.Environ(), extraEnv))
+		}
+		if err != nil {
+			guard.Close()
+			cancel()
+			return nil, err
+		}
+	}
 
 	if resumeID != "" && resumeID != core.ContinueSession {
 		cs.threadID.Store(resumeID)
@@ -123,6 +147,9 @@ func newCodexSession(ctx context.Context, cliBin string, cliExtraArgs []string, 
 // If a threadID exists (from a prior turn or resume), uses `codex exec resume <id> <prompt>`.
 // Otherwise uses `codex exec <prompt>` to start a new conversation.
 func (cs *codexSession) Send(prompt string, messageID string, images []core.ImageAttachment, files []core.FileAttachment) error {
+	if core.BusinessPlanRequested(prompt) && cs.planGuard == nil {
+		return &core.BusinessPlanSetupError{Err: fmt.Errorf("timeline request requires a guarded agent session")}
+	}
 	if !cs.alive.Load() {
 		return fmt.Errorf("session is closed")
 	}
@@ -138,6 +165,11 @@ func (cs *codexSession) Send(prompt string, messageID string, images []core.Imag
 			cs.wg.Done()
 		}
 	}()
+	if cs.planGuard != nil {
+		if err := cs.planGuard.Begin(prompt); err != nil {
+			return err
+		}
+	}
 
 	if len(files) > 0 {
 		filePaths := core.SaveFilesToDisk(cs.workDir, messageID, files)
@@ -154,6 +186,7 @@ func (cs *codexSession) Send(prompt string, messageID string, images []core.Imag
 		prompt = prependCodexPromptPreamble(prompt, cs.promptPreamble)
 	}
 	args := cs.buildExecArgs(prompt, imagePaths)
+	args = append(append([]string{}, cs.planArgs...), args...)
 	if len(cs.cliExtraArgs) > 0 {
 		args = append(append([]string{}, cs.cliExtraArgs...), args...)
 	}
@@ -444,6 +477,13 @@ func readJSONLines(r io.Reader, handle func([]byte) error) error {
 }
 
 func (cs *codexSession) handleEvent(raw map[string]any) {
+	if progress := cs.planGuard.Progress(); progress != nil {
+		select {
+		case cs.events <- core.Event{Type: core.EventTaskProgress, TaskProgress: progress}:
+		case <-cs.ctx.Done():
+			return
+		}
+	}
 	eventType, _ := raw["type"].(string)
 
 	switch eventType {
@@ -530,6 +570,9 @@ func (cs *codexSession) handleEvent(raw map[string]any) {
 // false cannot distinguish pending from in_progress. Do not invent an active
 // step or mark open entries complete merely because the item/turn has ended.
 func (cs *codexSession) handleTodoList(item map[string]any) {
+	if cs.planGuard.Enabled() {
+		return
+	} // The pre-tool guard publishes the full, confirmed status snapshot.
 	items, ok := item["items"].([]any)
 	if !ok {
 		return
@@ -1024,6 +1067,7 @@ func (cs *codexSession) refreshContextUsageFromRollout() {
 }
 
 func (cs *codexSession) Close() error {
+	defer cs.planGuard.Close()
 	cs.turnMu.Lock()
 	cs.alive.Store(false)
 	cs.cancel()

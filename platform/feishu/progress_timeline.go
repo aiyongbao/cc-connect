@@ -49,6 +49,23 @@ func buildTimelineCard(payload *core.ProgressCardPayload) string {
 	if payload.State == core.ProgressCardStateCompleted && taskProgressHasOpenSteps(payload.Steps) {
 		titleKey, color = core.MsgTimelineOpenSteps, "orange"
 	}
+	if payload.BusinessOnly {
+		if len(payload.Steps) > 0 {
+			return buildBusinessTimelineCard(payload, i18n, titleKey, color, nil)
+		}
+		// No steps is a planning state, never permission to render a technical
+		// transcript as business progress. Preserve legacy payload rendering.
+		text := i18n.T(core.MsgTimelinePlanning)
+		if payload.State == core.ProgressCardStatePaused || payload.State == core.ProgressCardStateFailed {
+			text = i18n.T(core.MsgTimelinePlanBlocked)
+		}
+		if payload.State == core.ProgressCardStateCompleted {
+			text = i18n.T(core.MsgTimelineNoProgress)
+		}
+		card := map[string]any{"schema": "2.0", "config": map[string]any{"wide_screen_mode": true}, "header": map[string]any{"title": timelineHeaderTitle(i18n, titleKey, payload.TitleDots), "template": color}, "body": map[string]any{"elements": []any{map[string]any{"tag": "markdown", "content": text}}}}
+		data, _ := json.Marshal(card)
+		return string(data)
+	}
 	segments := timelineCardSegments(payload, i18n)
 	// 终态若只剩内部占位行（本次执行从未产生思考或工具进度），隐藏过程内容：
 	// 头部的终态标题已表达结果，避免渲染只有占位文本的空“执行过程”面板。

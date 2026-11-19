@@ -582,6 +582,7 @@ type interactiveState struct {
 	recallProbeInFlight      bool
 	workspaceDir             string
 	agent                    Agent
+	planSetupFailed          bool // immutable startup result; never invalidates the saved conversation
 	mu                       sync.Mutex
 	stopCh                   chan struct{}
 	stopped                  bool
@@ -4274,7 +4275,11 @@ func (e *Engine) processInteractiveMessageWith(p Platform, msg *Message, session
 	defer stopRecallMonitor()
 
 	if as == nil {
-		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgFailedToStartAgentSession))
+		if state.planSetupFailed {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgTimelinePlanUnavailable))
+		} else {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgFailedToStartAgentSession))
+		}
 		return
 	}
 	applyInitialMessageContext(state, msg)
@@ -4566,6 +4571,9 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 		// If wantID is empty (/new, cleared session) but the process already has
 		// a concrete ID, reusing would keep --resume context — recycle (#238).
 		needRecycle := currentID != "" && (wantID == "" || wantID != currentID)
+		if scoped, ok := state.agentSession.(BusinessPlanScopeReporter); ok && scoped.BusinessPlanningScoped() != timelineProgressEnabled(p, replyCtx, e.display.CardMode) {
+			needRecycle = true
+		}
 		if !needRecycle {
 			state.mu.Lock()
 			state.busySession = session
@@ -4681,11 +4689,16 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 
 	isResume := startSessionID != ""
 	startAt := time.Now()
-	agentSession, err := agent.StartSession(e.ctx, startSessionID)
+	startCtx := e.ctx
+	if timelineProgressEnabled(p, replyCtx, e.display.CardMode) {
+		startCtx = WithBusinessPlanning(startCtx)
+	}
+	agentSession, err := agent.StartSession(startCtx, startSessionID)
 	startElapsed := time.Since(startAt)
 	if err != nil {
 		// If resume/continue failed, try a fresh session as fallback.
-		if startSessionID != "" {
+		var planningSetupErr *BusinessPlanSetupError
+		if startSessionID != "" && !errors.As(err, &planningSetupErr) {
 			slog.Error("session resume failed, falling back to fresh session",
 				"session_key", sessionKey, "failed_session_id", startSessionID,
 				"error", err, "elapsed", startElapsed)
@@ -4695,7 +4708,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 			sessions.Save()
 			startAt = time.Now()
 			isResume = false
-			agentSession, err = agent.StartSession(e.ctx, "")
+			agentSession, err = agent.StartSession(startCtx, "")
 			startElapsed = time.Since(startAt)
 			if err == nil {
 				slog.Info("fresh session started after resume failure",
@@ -4711,6 +4724,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 				Error:      fmt.Sprintf("failed to start session: %v", err),
 			})
 			newState := &interactiveState{platform: p, replyCtx: replyCtx, agent: agent, eventsNeedResync: true, busySession: session}
+			newState.planSetupFailed = errors.As(err, &planningSetupErr)
 			adoptPendingFromPlaceholder(e.interactiveStates[sessionKey], newState)
 			state = newState
 			e.interactiveStates[sessionKey] = state
@@ -6530,7 +6544,15 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			// tasks have drained. Finalizing the timeline before that check leaves
 			// later background thoughts/tools to the platform's fallback progress
 			// writer, which can create a second legacy card in timeline mode.
-			timeline.Finalize(ProgressCardStateCompleted)
+			planBlocked := false
+			if reporter, ok := agentSession.(BusinessPlanBlockReporter); ok {
+				planBlocked = reporter.BusinessPlanBlocked()
+			}
+			if planBlocked {
+				timeline.Finalize(ProgressCardStatePaused)
+			} else {
+				timeline.Finalize(ProgressCardStateCompleted)
+			}
 			cp.Finalize(ProgressCardStateCompleted)
 			// Use agentSession.CurrentSessionID() instead of event.SessionID.
 			// event.SessionID may be empty in some cases, causing the agent_session_id
@@ -6590,6 +6612,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 			}
 
+			if planBlocked {
+				fullResponse = e.i18n.T(MsgTimelinePlanBlocked)
+			}
 			// Strip any agent-self-reported "[ctx: ~XX%]" marker so it does not
 			// leak into the delivered text. The on-screen ctx indicator is now
 			// rendered exclusively in the reply footer.
