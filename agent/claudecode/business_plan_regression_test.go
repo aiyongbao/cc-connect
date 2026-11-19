@@ -3,6 +3,7 @@ package claudecode
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -52,7 +53,7 @@ func TestClaudeBusinessPlan_MergesExplicitSettingsWithoutLosingDenyOrHooks(t *te
 							t.Fatal(err)
 						}
 					}
-					if err := json.Unmarshal(value, &effective); err != nil {
+					if err := json.Unmarshal(stripJSONC(value), &effective); err != nil {
 						t.Fatal(err)
 					}
 				}
@@ -69,7 +70,14 @@ func TestClaudeBusinessPlan_MergesExplicitSettingsWithoutLosingDenyOrHooks(t *te
 				t.Fatal("tool deny rule was lost")
 			}
 			groups := effective["hooks"].(map[string]any)["PreToolUse"].([]any)
-			if len(groups) != 2 {
+			wantHooks := 2
+			if form == "relative-file" {
+				wantHooks = 1 // the disk file stays intact and the guard is added at runtime
+				if err := cs.verifyPlanningSettings(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if len(groups) != wantHooks || groups[0].(map[string]any)["matcher"] != "Read" {
 				t.Fatal("user hook was lost")
 			}
 		})
@@ -204,16 +212,38 @@ func TestClaudeBusinessPlan_PolicyPathsUseCLIWorkingDirectory(t *testing.T) {
 	if err := os.WriteFile(file, []byte(`{}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	_, _, path, err := splitPlanningSettings(relative, []string{"--settings", "settings.json"})
+	settings, err := splitPlanningSettings(relative, []string{"--settings", "settings.json"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !filepath.IsAbs(path) {
+	if !filepath.IsAbs(settings.source) || !filepath.IsAbs(settings.resolvedSource) {
 		t.Fatal("hook subprocess would resolve settings against a different cwd")
 	}
 	for _, p := range planningPolicyFiles(relative, []string{"CLAUDE_CONFIG_DIR=custom-config"}) {
 		if !filepath.IsAbs(p) {
 			t.Fatal("policy path is not absolute")
 		}
+	}
+}
+
+func TestClaudeBusinessPlan_UnsupportedFileOverlayDoesNotStartWork(t *testing.T) {
+	dir, configHome := t.TempDir(), t.TempDir()
+	source := filepath.Join(dir, "settings.json")
+	if err := os.WriteFile(source, []byte(`{}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(core.WithBusinessPlanning(context.Background()), 10*time.Second)
+	defer cancel()
+	cs, err := newClaudeSession(ctx, dir, os.Args[0], []string{"_cc-plan-test-cli", "--settings", source}, "", "test-model", "", "saved-conversation", "default", "", "", nil, nil, nil, []string{"CLAUDE_CONFIG_DIR=" + configHome, "CC_TEST_PLAN_REJECT_OVERLAY=1"}, "", false, core.SpawnOptions{}, 0, 0, t.TempDir(), core.LangEnglish)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cs.Close()
+	var setup *core.BusinessPlanSetupError
+	if err := cs.Send(core.WithBusinessPlanInstructions("hello"), "test", nil, nil); !errors.As(err, &setup) {
+		t.Fatalf("unsupported overlay did not stop the turn: %v", err)
+	}
+	if cs.planningOverlayApplied.Load() || cs.planGuard.Enabled() {
+		t.Fatal("the rejected overlay activated a planning turn")
 	}
 }

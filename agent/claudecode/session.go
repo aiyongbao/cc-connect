@@ -29,24 +29,26 @@ import (
 // In "auto" mode, permission requests are auto-approved internally
 // (avoiding --dangerously-skip-permissions which fails under root).
 type claudeSession struct {
-	planGuard        *planguard.Guard
-	planningMu       sync.Mutex
-	planningSequence uint64
-	planningWaiters  map[string]chan error
-	cmd              *exec.Cmd
-	stdin            io.WriteCloser
-	stdinMu          sync.Mutex
-	events           chan core.Event
-	sessionID        atomic.Value // stores string
-	permissionMode   atomic.Value // stores string
-	autoApprove      atomic.Bool
-	acceptEditsOnly  atomic.Bool
-	dontAsk          atomic.Bool
-	workDir          string
-	ctx              context.Context
-	cancel           context.CancelFunc
-	done             chan struct{}
-	alive            atomic.Bool
+	planGuard              *planguard.Guard
+	planningMu             sync.Mutex
+	planningSequence       uint64
+	planningWaiters        map[string]chan error
+	planningOverlay        map[string]any
+	planningOverlayApplied atomic.Bool
+	cmd                    *exec.Cmd
+	stdin                  io.WriteCloser
+	stdinMu                sync.Mutex
+	events                 chan core.Event
+	sessionID              atomic.Value // stores string
+	permissionMode         atomic.Value // stores string
+	autoApprove            atomic.Bool
+	acceptEditsOnly        atomic.Bool
+	dontAsk                atomic.Bool
+	workDir                string
+	ctx                    context.Context
+	cancel                 context.CancelFunc
+	done                   chan struct{}
+	alive                  atomic.Bool
 
 	// taskProgress is owned by the read loop and retained across turns of this
 	// process. It is separate from background agent/shell task lifecycles.
@@ -332,10 +334,7 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 			cancel()
 			return nil, &core.BusinessPlanSetupError{Err: fmt.Errorf("business planning is not yet supported with run_as_user isolation")}
 		}
-		if err := checkBusinessPlanningHooks(workDir, extraEnv, cliExtraArgs); err != nil {
-			cancel()
-			return nil, &core.BusinessPlanSetupError{Err: err}
-		}
+
 		var err error
 		planGuard, err = planguard.New()
 		if err != nil {
@@ -375,14 +374,16 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 		"--input-format", "stream-json",
 		"--permission-prompt-tool", "stdio",
 	}
+	var planningOverlay map[string]any
 	if planGuard != nil {
-		clean, prepared, err := preparePlanningArgs(planGuard, workDir, extraEnv, cliExtraArgs)
+		prepared, err := preparePlanningArgs(planGuard, workDir, extraEnv, cliExtraArgs)
 		if err != nil {
 			cancel()
 			return nil, &core.BusinessPlanSetupError{Err: err}
 		}
-		cliExtraArgs = clean
-		innerArgs = append(innerArgs, prepared...)
+		cliExtraArgs = prepared.extra
+		innerArgs = append(innerArgs, prepared.inner...)
+		planningOverlay = prepared.overlay
 	}
 	if !disableVerbose {
 		innerArgs = append(innerArgs, "--verbose")
@@ -644,6 +645,7 @@ func newClaudeSession(ctx context.Context, workDir, cliBin string, cliExtraArgs 
 		configuredEffort:      effort,
 	}
 	cs.planGuard = planGuard
+	cs.planningOverlay = planningOverlay
 	keepGuard = true
 	cs.setPermissionMode(mode)
 	cs.sessionID.Store(sessionID)

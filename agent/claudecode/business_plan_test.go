@@ -65,16 +65,13 @@ func runPlanningCLIFixture() error {
 					return err
 				}
 			}
-			if err := json.Unmarshal(value, &effective); err != nil {
+			if err := json.Unmarshal(stripJSONC(value), &effective); err != nil {
 				return err
 			}
-			if err := json.Unmarshal(value, &settings); err != nil {
+			if err := json.Unmarshal(stripJSONC(value), &settings); err != nil {
 				return err
 			}
 		}
-	}
-	if len(settings.Hooks["PreToolUse"]) < 1 {
-		return fmt.Errorf("missing pre-execution guard")
 	}
 	enc := json.NewEncoder(os.Stdout)
 	emit := func(v any) {
@@ -120,7 +117,11 @@ func runPlanningCLIFixture() error {
 		var request struct {
 			Type      string `json:"type"`
 			RequestID string `json:"request_id"`
-			Message   struct {
+			Request   struct {
+				Subtype  string         `json:"subtype"`
+				Settings map[string]any `json:"settings"`
+			} `json:"request"`
+			Message struct {
 				Content string `json:"content"`
 			} `json:"message"`
 		}
@@ -128,6 +129,31 @@ func runPlanningCLIFixture() error {
 			continue
 		}
 		if request.Type == "control_request" {
+			if request.Request.Subtype == "apply_flag_settings" {
+				response := map[string]any{"subtype": "success", "request_id": request.RequestID}
+				if os.Getenv("CC_TEST_PLAN_REJECT_OVERLAY") == "1" {
+					response["subtype"] = "error"
+				} else {
+					hooks, _ := effective["hooks"].(map[string]any)
+					if hooks == nil {
+						hooks = map[string]any{}
+					}
+					for event, groups := range request.Request.Settings["hooks"].(map[string]any) {
+						original, _ := hooks[event].([]any)
+						hooks[event] = append(original, groups.([]any)...)
+					}
+					effective["hooks"] = hooks
+					data, err := json.Marshal(effective)
+					if err != nil {
+						return err
+					}
+					if err := json.Unmarshal(data, &settings); err != nil {
+						return err
+					}
+				}
+				emit(map[string]any{"type": "control_response", "response": response})
+				continue
+			}
 			responseSettings := effective
 			if os.Getenv("CC_TEST_PLAN_DROP_EFFECTIVE_HOOKS") == "1" {
 				responseSettings = map[string]any{}
@@ -137,6 +163,9 @@ func runPlanningCLIFixture() error {
 		}
 		if request.Type != "user" {
 			continue
+		}
+		if len(settings.Hooks["PreToolUse"]) == 0 {
+			return fmt.Errorf("missing pre-execution guard")
 		}
 		turn++
 		if strings.HasSuffix(request.Message.Content, "hello") {
@@ -251,7 +280,12 @@ func TestClaudeBusinessPlan_ExplicitlyDisabledHooksAreNotOverridden(t *testing.T
 		if err := os.WriteFile(filepath.Join(home, "settings.json"), []byte(policy), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if err := checkBusinessPlanningHooks(t.TempDir(), []string{"CLAUDE_CONFIG_DIR=" + home}, nil); err == nil {
+		guard, err := planguard.New()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(guard.Close)
+		if _, err := preparePlanningArgs(guard, t.TempDir(), []string{"CLAUDE_CONFIG_DIR=" + home}, nil); err == nil {
 			t.Fatal("disabled hook policy was ignored")
 		}
 	}
