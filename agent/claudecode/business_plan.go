@@ -127,6 +127,11 @@ func preparePlanningArgs(g *planguard.Guard, workDir string, env, args []string)
 	if err := g.SetSettingsSource(path, original); err != nil {
 		return nil, nil, err
 	}
+	if path != "" {
+		if err := anchorSettingsPermissionRules(settings, path); err != nil {
+			return nil, nil, err
+		}
+	}
 	own := g.ClaudeArgs()
 	var injected map[string]any
 	if err := json.Unmarshal([]byte(own[1]), &injected); err != nil {
